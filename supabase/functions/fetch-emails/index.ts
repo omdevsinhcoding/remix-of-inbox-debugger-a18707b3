@@ -67,15 +67,11 @@ const QUICK_REFRESH_SKIP_WINDOW = 100;
 const QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT = 25;
 
 
-// Budgets are measured AFTER the IMAP connection is established (Gmail's TLS
-// handshake + greeting alone can take 5-9s, which used to eat the whole budget
-// and made every quick refresh scan 0 messages).
+// A click refresh has one wall-clock budget, including TLS, mailbox selection,
+// and message fetch. Keep it below the browser's 12-second transport deadline.
 const PER_ACCOUNT_TIMEOUT_MS = 12000;
-const FAST_REFRESH_TIMEOUT_MS = 8000;
-// Connection time is intentionally separate from the mailbox scan budget.
-// Gmail TLS/greeting can occasionally take 6-9s; charging that against the
-// scan left no time to inspect INBOX and made fresh mail appear "missing".
-const FAST_REFRESH_CONNECT_TIMEOUT_MS = 7000;
+const FAST_REFRESH_TIMEOUT_MS = 10500;
+const FAST_REFRESH_CONNECT_TIMEOUT_MS = 6500;
 // Manual refresh must cover a busy Gmail inbox without parsing unrelated mail.
 const FAST_REFRESH_SCAN_COUNT = 20;
 const STALE_DAYS = 60;
@@ -729,17 +725,17 @@ async function fetchFromAccount(
   };
 
   try {
-    // ImapFlow's connectionTimeout performs the abort. Closing a socket from a
-    // competing timer before it is usable emits an uncaught event-loop error.
+    // ImapFlow bounds the handshake. The scan timer below uses only the time
+    // remaining in the same end-to-end budget instead of adding another 8s.
     await client.connect();
     console.log(`[${accountLabel}] IMAP connected to ${imapHost}`);
-    startedAt = Date.now();
     // Closing the socket is intentional: a boolean timeout cannot interrupt a
     // hung IMAP SEARCH/FETCH, which was leaving the browser loading for minutes.
+    const remainingBudgetMs = Math.max(1, budgetMs - (Date.now() - startedAt));
     timer = setTimeout(() => {
       timedOut = true;
       closeClient();
-    }, budgetMs) as unknown as number;
+    }, remainingBudgetMs) as unknown as number;
 
     // INBOX is the latency-critical path for sign-in and household messages.
     // Only fall back to Gmail All Mail when INBOX produced no new rows; doing
