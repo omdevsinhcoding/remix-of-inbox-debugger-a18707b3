@@ -563,7 +563,7 @@ async function fetchFromAccount(
         since.setDate(since.getDate() - 7);
         try {
           const found = await client.search({ from: "netflix.com", since }, { uid: true });
-          if (found?.length) netflixUids.push(...(found as number[]));
+          if (Array.isArray(found) && found.length > 0) netflixUids.push(...found);
         } catch (searchErr) {
           console.log(`[${accountLabel}] ${mailboxPath} Netflix search failed:`, searchErr);
         }
@@ -632,7 +632,7 @@ async function fetchFromAccount(
         if (!hasBudget() || (quickRefresh && allAccountQuotasFilled())) break;
         try {
           const fullMsg = await client.fetchOne(uid, { source: true, envelope: true }, { uid: true });
-          if (!fullMsg?.source) continue;
+          if (!fullMsg || !fullMsg.source) continue;
           const parsed = await simpleParser(fullMsg.source, { skipImageLinks: true, skipTextLinks: true });
           const bodyText = (parsed.text || "").trim();
           const subjectText = (parsed.subject || fullMsg.envelope?.subject || "").toString();
@@ -746,8 +746,9 @@ async function loadAccounts(supabase: any, secret: string, accountLabels: string
       if (accountLabels && accountLabels.length > 0) {
         requested = new Set(normalizeAccountLabels(accountLabels, availableLabels));
       }
-      const accountRows = requested
-        ? healedAccounts.filter((acc: any) => requested.has(String(acc.label || acc.user || "").trim()))
+      const requestedLabels = requested;
+      const accountRows = requestedLabels
+        ? healedAccounts.filter((acc: any) => requestedLabels.has(String(acc.label || acc.user || "").trim()))
         : healedAccounts;
       const decrypted = await Promise.all(accountRows.map(async (acc: any) => {
         if (!acc.user || !acc.password) return null;
@@ -804,8 +805,8 @@ async function runSync(supabase: any, secret: string, source: string, accountLab
       .order("date", { ascending: false })
       .order("id", { ascending: false })
       .limit(DEDUP_ID_LIMIT);
-    const cachedIds = new Set((cachedRows || []).map((r: any) => String(r.id)));
-    const cachedMessageIds = new Set(
+    const cachedIds = new Set<string>((cachedRows || []).map((r: any) => String(r.id)));
+    const cachedMessageIds = new Set<string>(
       (cachedRows || []).map((r: any) => String(r.message_id || "").trim().toLowerCase()).filter(Boolean),
     );
 
