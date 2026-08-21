@@ -964,7 +964,7 @@ async function runSync(supabase: any, secret: string, source: string, accountLab
     const settled = await Promise.allSettled(physicalGroups.map(async (group) => {
       const primary = group[0];
       console.log(`[sync] Fetching ${group.map((acc) => acc.label).join(", ")} (${primary.user})`);
-      const result = await fetchFromAccountNative(primary.host, primary.port, primary.user, primary.password, primary.label, cachedIds, cachedMessageIds, maxMessages, quickRefresh, [], group);
+      const result = await fetchFromAccount(primary.host, primary.port, primary.user, primary.password, primary.label, cachedIds, cachedMessageIds, maxMessages, quickRefresh, [], group);
       return { group, result };
     }));
 
