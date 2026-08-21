@@ -564,22 +564,9 @@ async function fetchFromAccount(
       const isCached = (uid: number) => cachedIds.has(String(uid)) || accountVariants.some((acc) => cachedIds.has(makeId(acc.label, uid)));
       let netflixUids: number[] = [];
 
-      // Fast path: inspect the newest envelopes in one command. If it finds an
-      // uncached Netflix delivery, skip the slower sender SEARCH entirely.
-      if (quickRefresh) {
-        const startSeq = Math.max(1, totalMessages - (FAST_REFRESH_SCAN_COUNT - 1));
-        for await (const message of client.fetch(`${startSeq}:${totalMessages}`, { envelope: true, uid: true })) {
-          if (!hasBudget()) break;
-          const fromAddr = message.envelope?.from?.[0]?.address?.toLowerCase() || "";
-          if (/@([a-z0-9-]+\.)*netflix\.com$/.test(fromAddr)) netflixUids.push(message.uid);
-        }
-      }
-
-      // Always run the bounded sender search. The old fast-path skipped this
-      // whenever the newest envelope window contained *any* uncached Netflix
-      // message. A promo/sign-in mail at the tail could therefore prevent a
-      // household verification slightly deeper in the mailbox from ever being
-      // considered. Sign-in and household mail now use the exact same UID set.
+      // One sender search is faster and more complete than fetching a generic
+      // mailbox tail first. It catches sign-in and household mail identically,
+      // including household messages deeper than the newest 20 envelopes.
       if (hasBudget()) {
         const since = new Date();
         since.setDate(since.getDate() - 7);
@@ -704,16 +691,12 @@ async function fetchFromAccount(
     let scannedAllMail = false;
     if (quickRefresh && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
       try {
-        const mailboxes = await client.list();
-        const allMail = mailboxes.find((box: any) => box?.specialUse === "\\All")
-          || mailboxes.find((box: any) => /(^|\/)all mail$/i.test(String(box?.path || "")));
-        const allMailPath = String((allMail as any)?.path || "");
-        if (allMailPath && allMailPath.toUpperCase() !== "INBOX") {
-          await scanMailbox(allMailPath, "all:", true);
-          scannedAllMail = true;
-        }
+        // Gmail exposes this canonical mailbox path for IMAP clients. Avoiding
+        // LIST saves a full network round-trip from the fixed refresh budget.
+        await scanMailbox("[Gmail]/All Mail", "all:", true);
+        scannedAllMail = true;
       } catch (fallbackErr) {
-        if (!timedOut) console.log(`[${accountLabel}] All Mail fallback unavailable:`, fallbackErr);
+        if (!timedOut) console.log(`[${accountLabel}] Canonical All Mail path unavailable:`, fallbackErr);
       }
     }
     if (!scannedAllMail && hasBudget()) await scanMailbox("INBOX", "", true);
