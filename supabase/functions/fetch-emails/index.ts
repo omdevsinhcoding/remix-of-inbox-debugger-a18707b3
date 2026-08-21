@@ -110,6 +110,46 @@ function envelopeRecipients(envelope: any): string {
     .join(", ");
 }
 
+function headerValueText(value: unknown): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(headerValueText).filter(Boolean).join(", ");
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === "string") return record.text;
+    if (Array.isArray(record.value)) {
+      return record.value
+        .map((entry: any) => entry?.address || entry?.text || "")
+        .filter(Boolean)
+        .join(", ");
+    }
+  }
+  return String(value);
+}
+
+function parsedRoutingRecipients(parsed: any, envelope: any): string {
+  const visible = [parsed?.to, parsed?.cc]
+    .flatMap((value: any) => Array.isArray(value) ? value : value ? [value] : [])
+    .map((value: any) => headerValueText(value))
+    .filter(Boolean);
+
+  // Shared Gmail inboxes often receive Netflix messages through BCC or an
+  // alias. In those messages `To` can contain the primary mailbox (or no useful
+  // address), while Gmail preserves the real destination in delivery headers.
+  // Include those headers before logical-account routing so a fresh message is
+  // assigned to the intended profile rather than the catch-all account.
+  const headers = parsed?.headers;
+  const delivered = ["delivered-to", "x-original-to", "x-google-original-to", "envelope-to"]
+    .map((name) => {
+      try { return headerValueText(headers?.get?.(name)); } catch { return ""; }
+    })
+    .filter(Boolean);
+
+  return Array.from(new Set([...delivered, ...visible, envelopeRecipients(envelope)]))
+    .filter(Boolean)
+    .join(", ");
+}
+
 function normalizeAccountLabels(raw: any, available: string[] = []): string[] {
   const allowed = Array.from(new Set(available.map((s) => String(s || "").trim()).filter(Boolean)));
   const out: string[] = [];
@@ -656,16 +696,11 @@ async function fetchFromAccount(
           const subjectText = (parsed.subject || fullMsg.envelope?.subject || "").toString();
           const fromText = parsed.from?.text || "";
           if (!isNetflixFrom(fromText)) continue;
-          const parsedRecipients = [parsed.to, parsed.cc]
-            .flatMap((value: any) => Array.isArray(value) ? value : value ? [value] : [])
-            .map((value: any) => String(value?.text || "").trim())
-            .filter(Boolean)
-            .join(", ");
           // Some Netflix household templates expose the recipient only in the
-          // IMAP envelope (or use BCC), while sign-in-code templates populate
-          // the parsed To header. Use both so recipient routing cannot discard
-          // household mail before it reaches the cache.
-          const toText = parsedRecipients || envelopeRecipients(fullMsg.envelope) || undefined;
+          // IMAP envelope or Gmail delivery headers (BCC/aliases), while
+          // sign-in-code templates populate the parsed To header. Use all of
+          // them so recipient routing cannot discard or misassign fresh mail.
+          const toText = parsedRoutingRecipients(parsed, fullMsg.envelope) || undefined;
           const matchedAccount = selectLogicalAccount(toText, accountVariants);
           if (!matchedAccount) {
             recipientSkipped++;
