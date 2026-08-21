@@ -599,6 +599,12 @@ async function fetchFromAccount(
     if (!hasBudget()) return;
     const lock = await client.getMailboxLock(mailboxPath);
     try {
+      // SELECT can return before Gmail publishes a just-delivered message's
+      // EXISTS update. Force one cheap round trip before reading the count so
+      // the first bounded tail scan includes the newest OTP/household message.
+      if (quickRefresh && allowIndexingGrace && hasBudget()) {
+        try { await client.noop(); } catch {}
+      }
       const totalMessages = Number((client.mailbox as any)?.exists || 0);
       if (totalMessages <= 0 || !hasBudget()) return;
 
@@ -649,34 +655,6 @@ async function fetchFromAccount(
           console.log(`[${accountLabel}] ${mailboxPath} Netflix search failed:`, searchErr);
         }
       }
-      // Gmail can accept a message before the selected mailbox reports its new
-      // EXISTS count. Merely sleeping and re-reading client.mailbox.exists does
-      // not refresh that value: an IMAP command must force a server round trip.
-      // Always perform one short INBOX recheck, even if another uncached mail was
-      // found, otherwise that older mail can mask a brand-new sign-in code.
-      if (quickRefresh && allowIndexingGrace && hasBudget()) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        if (hasBudget()) {
-          try { await client.noop(); } catch {}
-          const refreshedExists = Number((client.mailbox as any)?.exists || totalMessages);
-          const tailStart = Math.max(1, refreshedExists - (FAST_REFRESH_SCAN_COUNT - 1));
-          try {
-            for await (const message of client.fetch(`${tailStart}:*`, { envelope: true, uid: true })) {
-              if (!hasBudget()) break;
-              const fromAddr = message.envelope?.from?.[0]?.address?.toLowerCase() || "";
-              const envelopeMessageId = String(message.envelope?.messageId || "").trim().toLowerCase();
-              if (/@([a-z0-9-]+\.)*netflix\.com$/.test(fromAddr)
-                && !isCached(message.uid)
-                && !(envelopeMessageId && cachedMessageIds.has(envelopeMessageId))) {
-                netflixUids.push(message.uid);
-              }
-            }
-          } catch (tailErr) {
-            console.log(`[${accountLabel}] Final ${mailboxPath} tail scan failed:`, tailErr);
-          }
-        }
-      }
-
       const candidates = Array.from(new Set(netflixUids)).sort((a, b) => b - a);
       const scanLimit = quickRefresh ? Math.min(candidates.length, 250) : Math.min(Math.max(candidates.length, maxMessages * 3), 250);
       const fetchLimit = quickRefresh ? QUICK_REFRESH_CANDIDATE_UIDS : clampLimit(maxMessages, USER_REFRESH_MAX_UIDS, FULL_SYNC_MAX_UIDS);
@@ -763,22 +741,16 @@ async function fetchFromAccount(
       closeClient();
     }, budgetMs) as unknown as number;
 
-    // A single bounded Gmail All Mail scan is authoritative for click refresh:
-    // it contains normal INBOX sign-in codes plus household mail immediately
-    // archived by a Gmail rule. Scanning INBOX and All Mail sequentially caused
-    // the browser request to expire before the second mailbox was processed.
-    // Non-Gmail servers continue to use their INBOX.
-    if (quickRefresh && /(^|\.)gmail\.com$/i.test(imapHost)) {
+    // INBOX is the latency-critical path for sign-in and household messages.
+    // Only fall back to Gmail All Mail when INBOX produced no new rows; doing
+    // both on every click consumed the fixed budget and made even OTPs late.
+    await scanMailbox("INBOX", "", true);
+    if (quickRefresh && emails.length === 0 && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
       try {
-        await scanMailbox("[Gmail]/All Mail", "all:", true);
-      } catch (allMailErr) {
-        if (!timedOut && hasBudget()) {
-          console.log(`[${accountLabel}] Canonical All Mail unavailable, falling back to INBOX:`, allMailErr);
-          await scanMailbox("INBOX", "", true);
-        }
+        await scanMailbox("[Gmail]/All Mail", "all:", false);
+      } catch (fallbackErr) {
+        if (!timedOut) console.log(`[${accountLabel}] Canonical All Mail fallback unavailable:`, fallbackErr);
       }
-    } else {
-      await scanMailbox("INBOX", "", true);
     }
   } catch (err) {
     if (!timedOut) throw err;
