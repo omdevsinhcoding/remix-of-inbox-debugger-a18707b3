@@ -564,10 +564,35 @@ async function fetchFromAccount(
       const isCached = (uid: number) => cachedIds.has(String(uid)) || accountVariants.some((acc) => cachedIds.has(makeId(acc.label, uid)));
       let netflixUids: number[] = [];
 
-      // One sender search is faster and more complete than fetching a generic
-      // mailbox tail first. It catches sign-in and household mail identically,
-      // including household messages deeper than the newest 20 envelopes.
-      if (hasBudget()) {
+      // A Gmail SEARCH across All Mail can consume the complete 8-second manual
+      // refresh budget on large inboxes. For a click refresh, fetch one bounded
+      // tail of lightweight envelopes instead; this reaches newly delivered
+      // sign-in and household messages in one round trip and leaves the budget
+      // for downloading only genuinely new Netflix bodies.
+      if (quickRefresh && hasBudget()) {
+        const tailCount = Math.max(FAST_REFRESH_SCAN_COUNT, QUICK_REFRESH_CANDIDATE_UIDS * 2);
+        const tailStart = Math.max(1, totalMessages - (tailCount - 1));
+        try {
+          for await (const message of client.fetch(`${tailStart}:*`, { envelope: true, uid: true })) {
+            if (!hasBudget()) break;
+            const fromAddresses = (message.envelope?.from || [])
+              .map((sender: any) => String(sender?.address || "").toLowerCase())
+              .filter(Boolean);
+            if (!fromAddresses.some((address: string) => /@([a-z0-9-]+\.)*netflix\.com$/.test(address))) continue;
+            const envelopeMessageId = String(message.envelope?.messageId || "").trim().toLowerCase();
+            // All Mail and INBOX use different UIDs for the same message. The
+            // Message-ID check prevents old cached mail from consuming body
+            // fetch time after switching mailbox paths.
+            if (isCached(message.uid) || (envelopeMessageId && cachedMessageIds.has(envelopeMessageId))) {
+              skipped++;
+              continue;
+            }
+            netflixUids.push(message.uid);
+          }
+        } catch (tailErr) {
+          console.log(`[${accountLabel}] ${mailboxPath} newest-envelope scan failed:`, tailErr);
+        }
+      } else if (hasBudget()) {
         const since = new Date();
         since.setDate(since.getDate() - 7);
         try {
@@ -590,7 +615,12 @@ async function fetchFromAccount(
             for await (const message of client.fetch(`${tailStart}:*`, { envelope: true, uid: true })) {
               if (!hasBudget()) break;
               const fromAddr = message.envelope?.from?.[0]?.address?.toLowerCase() || "";
-              if (/@([a-z0-9-]+\.)*netflix\.com$/.test(fromAddr)) netflixUids.push(message.uid);
+              const envelopeMessageId = String(message.envelope?.messageId || "").trim().toLowerCase();
+              if (/@([a-z0-9-]+\.)*netflix\.com$/.test(fromAddr)
+                && !isCached(message.uid)
+                && !(envelopeMessageId && cachedMessageIds.has(envelopeMessageId))) {
+                netflixUids.push(message.uid);
+              }
             }
           } catch (tailErr) {
             console.log(`[${accountLabel}] Final ${mailboxPath} tail scan failed:`, tailErr);
