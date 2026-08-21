@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { ImapFlow } from "npm:imapflow@1.2.18";
+import { ImapFlow } from "npm:imapflow@1.4.3";
 import { simpleParser } from "npm:mailparser@3.9.6";
 import { readRequest, maybeEncryptResponse, EncryptedRequestContext, PlaintextRejectedError, plaintextRejectedResponse, TransportError, transportErrorResponse } from "../_shared/crypto.ts";
 import { redactEmailsHtml, redactEmailsText } from "../_shared/redact.ts";
@@ -72,6 +72,10 @@ const QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT = 25;
 // and made every quick refresh scan 0 messages).
 const PER_ACCOUNT_TIMEOUT_MS = 12000;
 const FAST_REFRESH_TIMEOUT_MS = 8000;
+// Connection time is intentionally separate from the mailbox scan budget.
+// Gmail TLS/greeting can occasionally take 6-9s; charging that against the
+// scan left no time to inspect INBOX and made fresh mail appear "missing".
+const FAST_REFRESH_CONNECT_TIMEOUT_MS = 7000;
 // Manual refresh must cover a busy Gmail inbox without parsing unrelated mail.
 const FAST_REFRESH_SCAN_COUNT = 20;
 const STALE_DAYS = 60;
@@ -518,7 +522,7 @@ async function fetchFromAccount(
   let timedOut = false;
   let startedAt = Date.now();
   const budgetMs = quickRefresh ? FAST_REFRESH_TIMEOUT_MS : PER_ACCOUNT_TIMEOUT_MS;
-  const connectBudgetMs = quickRefresh ? 6000 : 8000;
+  const connectBudgetMs = quickRefresh ? FAST_REFRESH_CONNECT_TIMEOUT_MS : 8000;
   let timer: number | undefined;
   let connectTimer: number | undefined;
   const hasBudget = () => !timedOut && Date.now() - startedAt < budgetMs;
@@ -529,9 +533,17 @@ async function fetchFromAccount(
     secure: true,
     auth: { user: imapUser, pass: imapPassword },
     logger: false,
-    socketTimeout: quickRefresh ? 9000 : 14000,
-    greetingTimeout: quickRefresh ? 6000 : 8000,
+    connectionTimeout: connectBudgetMs,
+    socketTimeout: quickRefresh ? 8000 : 14000,
+    greetingTimeout: quickRefresh ? 7000 : 8000,
   });
+
+  const closeClient = () => {
+    try {
+      const closing: any = client.close();
+      if (closing && typeof closing.catch === "function") void closing.catch(() => {});
+    } catch {}
+  };
 
   const accountVariants = logicalAccounts.length > 0
     ? logicalAccounts
@@ -692,7 +704,7 @@ async function fetchFromAccount(
       new Promise<never>((_, reject) => {
         connectTimer = setTimeout(() => {
           timedOut = true;
-          try { client.close(); } catch {}
+          closeClient();
           reject(new Error(`IMAP connect exceeded ${connectBudgetMs}ms`));
         }, connectBudgetMs) as unknown as number;
       }),
@@ -707,7 +719,7 @@ async function fetchFromAccount(
     // hung IMAP SEARCH/FETCH, which was leaving the browser loading for minutes.
     timer = setTimeout(() => {
       timedOut = true;
-      try { client.close(); } catch {}
+      closeClient();
     }, budgetMs) as unknown as number;
 
     await scanMailbox("INBOX", "", false);
@@ -738,7 +750,7 @@ async function fetchFromAccount(
   } finally {
     if (connectTimer !== undefined) clearTimeout(connectTimer);
     if (timer !== undefined) clearTimeout(timer);
-    try { client.close(); } catch {}
+    closeClient();
   }
 
   return { emails, fetched: emails.length, skipped, recipientSkipped, timedOut };
