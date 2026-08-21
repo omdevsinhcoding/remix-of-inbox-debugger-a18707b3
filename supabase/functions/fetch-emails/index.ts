@@ -1,6 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { ImapFlow } from "npm:imapflow@1.4.3";
-import { ImapClient } from "jsr:@workingdevshero/deno-imap@1.0.0";
 import { simpleParser } from "npm:mailparser@3.9.6";
 import { readRequest, maybeEncryptResponse, EncryptedRequestContext, PlaintextRejectedError, plaintextRejectedResponse, TransportError, transportErrorResponse } from "../_shared/crypto.ts";
 import { redactEmailsHtml, redactEmailsText } from "../_shared/redact.ts";
@@ -576,8 +575,12 @@ async function fetchFromAccount(
         }
       }
 
-      let hasUncachedCandidate = netflixUids.some((uid) => !isCached(uid));
-      if (!hasUncachedCandidate && hasBudget()) {
+      // Always run the bounded sender search. The old fast-path skipped this
+      // whenever the newest envelope window contained *any* uncached Netflix
+      // message. A promo/sign-in mail at the tail could therefore prevent a
+      // household verification slightly deeper in the mailbox from ever being
+      // considered. Sign-in and household mail now use the exact same UID set.
+      if (hasBudget()) {
         const since = new Date();
         since.setDate(since.getDate() - 7);
         try {
@@ -586,8 +589,8 @@ async function fetchFromAccount(
         } catch (searchErr) {
           console.log(`[${accountLabel}] ${mailboxPath} Netflix search failed:`, searchErr);
         }
-        hasUncachedCandidate = netflixUids.some((uid) => !isCached(uid));
       }
+      const hasUncachedCandidate = netflixUids.some((uid) => !isCached(uid));
 
       // Gmail can expose a just-delivered UID shortly after accepting the mail.
       // Recheck once only on INBOX and only when there is still no new candidate.
@@ -615,7 +618,6 @@ async function fetchFromAccount(
       for (const uid of candidates.slice(0, scanLimit)) {
         if (isCached(uid)) {
           skipped++;
-          if (quickRefresh && skipped >= QUICK_REFRESH_SKIP_WINDOW) break;
         } else {
           uncachedUids.push(uid);
         }
@@ -696,12 +698,11 @@ async function fetchFromAccount(
       closeClient();
     }, budgetMs) as unknown as number;
 
-    await scanMailbox("INBOX", "", false);
-
-    // Gmail labels can route Promotions/archived mail outside INBOX. If the
-    // fast INBOX pass found nothing new, use the provider's special-use All Mail
-    // mailbox as a bounded fallback within the same unchanged time budget.
-    if (quickRefresh && hasBudget()) {
+    // Gmail can route household mail outside INBOX while sign-in codes remain
+    // in INBOX. Scan its authoritative All Mail mailbox first so both classes
+    // use one path and one fixed deadline, then fall back to INBOX elsewhere.
+    let scannedAllMail = false;
+    if (quickRefresh && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
       try {
         const mailboxes = await client.list();
         const allMail = mailboxes.find((box: any) => box?.specialUse === "\\All")
@@ -709,15 +710,13 @@ async function fetchFromAccount(
         const allMailPath = String((allMail as any)?.path || "");
         if (allMailPath && allMailPath.toUpperCase() !== "INBOX") {
           await scanMailbox(allMailPath, "all:", true);
-        } else if (hasBudget()) {
-          // Non-Gmail servers often expose no All Mail mailbox; retain the
-          // short indexing grace on INBOX without extending the deadline.
-          await scanMailbox("INBOX", "", true);
+          scannedAllMail = true;
         }
       } catch (fallbackErr) {
         if (!timedOut) console.log(`[${accountLabel}] All Mail fallback unavailable:`, fallbackErr);
       }
     }
+    if (!scannedAllMail && hasBudget()) await scanMailbox("INBOX", "", true);
   } catch (err) {
     if (!timedOut) throw err;
     console.warn(`[${accountLabel}] IMAP refresh stopped at ${budgetMs}ms budget`);
@@ -725,138 +724,6 @@ async function fetchFromAccount(
     if (connectTimer !== undefined) clearTimeout(connectTimer);
     if (timer !== undefined) clearTimeout(timer);
     closeClient();
-  }
-
-  return { emails, fetched: emails.length, skipped, recipientSkipped, timedOut };
-}
-
-async function fetchFromAccountNative(
-  imapHost: string,
-  imapPort: number,
-  imapUser: string,
-  imapPassword: string,
-  accountLabel: string,
-  cachedIds: Set<string>,
-  cachedMessageIds: Set<string>,
-  maxMessages = FULL_SYNC_MAX_UIDS,
-  quickRefresh = false,
-  recipientFilters: string[] = [],
-  logicalAccounts: Account[] = [],
-): Promise<{ emails: any[]; fetched: number; skipped: number; recipientSkipped: number; timedOut: boolean }> {
-  const emails: any[] = [];
-  let skipped = 0;
-  let recipientSkipped = 0;
-  let timedOut = false;
-  const startedAt = Date.now();
-  const totalBudgetMs = quickRefresh ? 14_000 : 24_000;
-  const hasBudget = () => Date.now() - startedAt < totalBudgetMs;
-  const accountVariants = logicalAccounts.length > 0
-    ? logicalAccounts
-    : [{ label: accountLabel, host: imapHost, port: imapPort, user: imapUser, password: imapPassword, recipientFilters }];
-  const eligibleByAccount = new Map(accountVariants.map((acc) => [acc.label, 0]));
-  const client = new ImapClient({
-    host: imapHost,
-    port: imapPort,
-    tls: true,
-    username: imapUser,
-    password: imapPassword,
-    authMechanism: "PLAIN",
-    connectionTimeout: quickRefresh ? 7_000 : 10_000,
-    socketTimeout: quickRefresh ? 8_000 : 14_000,
-    commandTimeout: quickRefresh ? 3_500 : 8_000,
-    autoReconnect: false,
-  });
-
-  const scanMailbox = async (mailbox: string, idNamespace = "") => {
-    if (!hasBudget()) return;
-    const selected = await client.selectMailbox(mailbox);
-    const exists = Number(selected.exists || 0);
-    if (exists <= 0) return;
-    const scanCount = quickRefresh ? Math.max(FAST_REFRESH_SCAN_COUNT, 50) : Math.max(maxMessages, 50);
-    const start = Math.max(1, exists - scanCount + 1);
-    const tail = await client.fetch(`${start}:${exists}`, { envelope: true, uid: true });
-    const candidates = tail
-      .filter((message: any) => {
-        const from = message.envelope?.from?.[0];
-        const address = `${from?.mailbox || ""}@${from?.host || ""}`.toLowerCase();
-        return /@([a-z0-9-]+\.)*netflix\.com$/.test(address);
-      })
-      .sort((a: any, b: any) => Number(b.seq || 0) - Number(a.seq || 0));
-
-    const fetchLimit = quickRefresh ? QUICK_REFRESH_CANDIDATE_UIDS : clampLimit(maxMessages, USER_REFRESH_MAX_UIDS, FULL_SYNC_MAX_UIDS);
-    let considered = 0;
-    for (const candidate of candidates) {
-      if (!hasBudget() || considered >= fetchLimit) break;
-      const uid = Number(candidate.uid || candidate.seq || 0);
-      const isCached = cachedIds.has(String(uid)) || accountVariants.some((acc) => cachedIds.has(`${acc.label}:${idNamespace}${uid}`));
-      if (isCached) {
-        skipped++;
-        if (quickRefresh && skipped >= QUICK_REFRESH_SKIP_WINDOW) break;
-        continue;
-      }
-      considered++;
-      const messages = await client.fetch(String(candidate.seq), { full: true, envelope: true, uid: true });
-      const fullMsg: any = messages[0];
-      if (!fullMsg?.raw) continue;
-      const parsed = await simpleParser(fullMsg.raw, { skipImageLinks: true, skipTextLinks: true });
-      const bodyText = (parsed.text || "").trim();
-      const subjectText = String(parsed.subject || fullMsg.envelope?.subject || "");
-      const fromText = parsed.from?.text || "";
-      if (!isNetflixFrom(fromText)) continue;
-      const parsedRecipients = [parsed.to, parsed.cc]
-        .flatMap((value: any) => Array.isArray(value) ? value : value ? [value] : [])
-        .map((value: any) => String(value?.text || "").trim())
-        .filter(Boolean)
-        .join(", ");
-      const matchedAccount = selectLogicalAccount(parsedRecipients || undefined, accountVariants);
-      if (!matchedAccount) {
-        recipientSkipped++;
-        continue;
-      }
-      const messageId = String(parsed.messageId || "").trim().toLowerCase();
-      if (messageId && cachedMessageIds.has(messageId)) {
-        skipped++;
-        continue;
-      }
-      const email = {
-        id: `${matchedAccount.label}:${idNamespace}${uid}`,
-        message_id: parsed.messageId || null,
-        subject: subjectText,
-        from: fromText || "Netflix",
-        to: parsedRecipients || undefined,
-        date: parsed.date || new Date(),
-        otp: extractOtpCode(subjectText, bodyText),
-        preview: redactEmailsText(bodyText.length > 100 ? `${bodyText.substring(0, 100)}...` : bodyText),
-        html: redactEmailsHtml(parsed.html || parsed.textAsHtml || `<pre>${bodyText}</pre>`),
-        account_label: matchedAccount.label,
-      };
-      const visibility = classifyEmailForVisibility(email);
-      const eligibleForUser = visibility !== "password_reset" && visibility !== "account_update";
-      if (!quickRefresh || !eligibleForUser || (eligibleByAccount.get(matchedAccount.label) || 0) < QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT) {
-        emails.push(email);
-        if (messageId) cachedMessageIds.add(messageId);
-      }
-      if (eligibleForUser) eligibleByAccount.set(matchedAccount.label, (eligibleByAccount.get(matchedAccount.label) || 0) + 1);
-    }
-  };
-
-  try {
-    await client.connect();
-    await client.authenticate();
-    console.log(`[${accountLabel}] Native IMAP connected to ${imapHost}`);
-    await scanMailbox("INBOX");
-    if (quickRefresh && hasBudget()) {
-      const mailboxes = await client.listMailboxes();
-      const allMail = mailboxes.find((box: any) => (box.flags || []).some((flag: string) => flag.toUpperCase() === "\\ALL"))
-        || mailboxes.find((box: any) => /(^|\/)all mail$/i.test(String(box.name || "")));
-      if (allMail?.name && String(allMail.name).toUpperCase() !== "INBOX") await scanMailbox(String(allMail.name), "all:");
-    }
-  } catch (err) {
-    timedOut = /timeout/i.test(err instanceof Error ? err.message : String(err));
-    if (!timedOut) throw err;
-    console.warn(`[${accountLabel}] Native IMAP refresh reached its fixed deadline`);
-  } finally {
-    await client.disconnect().catch(() => {});
   }
 
   return { emails, fetched: emails.length, skipped, recipientSkipped, timedOut };
