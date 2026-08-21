@@ -763,23 +763,22 @@ async function fetchFromAccount(
       closeClient();
     }, budgetMs) as unknown as number;
 
-    // User refresh must inspect Gmail INBOX first. `[Gmail]/All Mail` can be
-    // very large, so it remains a bounded best-effort second pass inside the
-    // same deadline. Do not gate that pass on the whole physical inbox finding
-    // zero rows: one Gmail login can back several logical accounts, and an
-    // INBOX hit for account A must not prevent an archived/filtered message for
-    // account B from being discovered in All Mail.
-    await scanMailbox("INBOX", "", true);
-    // Gmail rules can archive Netflix household messages immediately, so they
-    // exist in All Mail but not INBOX. An unrelated INBOX sign-in hit must not
-    // suppress this pass. It remains bounded and uses only the time left inside
-    // the same fixed 8-second budget.
-    if (quickRefresh && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
+    // A single bounded Gmail All Mail scan is authoritative for click refresh:
+    // it contains normal INBOX sign-in codes plus household mail immediately
+    // archived by a Gmail rule. Scanning INBOX and All Mail sequentially caused
+    // the browser request to expire before the second mailbox was processed.
+    // Non-Gmail servers continue to use their INBOX.
+    if (quickRefresh && /(^|\.)gmail\.com$/i.test(imapHost)) {
       try {
-        await scanMailbox("[Gmail]/All Mail", "all:", false);
-      } catch (fallbackErr) {
-        if (!timedOut) console.log(`[${accountLabel}] Canonical All Mail fallback unavailable:`, fallbackErr);
+        await scanMailbox("[Gmail]/All Mail", "all:", true);
+      } catch (allMailErr) {
+        if (!timedOut && hasBudget()) {
+          console.log(`[${accountLabel}] Canonical All Mail unavailable, falling back to INBOX:`, allMailErr);
+          await scanMailbox("INBOX", "", true);
+        }
       }
+    } else {
+      await scanMailbox("INBOX", "", true);
     }
   } catch (err) {
     if (!timedOut) throw err;
