@@ -20,7 +20,7 @@ const ACCOUNT_UPDATE_RE = /(attention|action (needed|required)|account (informat
 
 // Netflix household / new-device / "is this you?" emails have no OTP, but
 // users must see them so they can press Netflix's verification button.
-const HOUSEHOLD_SIGNIN_RE = /(netflix household|your household|update your household|household has been confirmed|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
+const HOUSEHOLD_SIGNIN_RE = /(netflix household|your household|update your household|household (has been|was|is) (confirmed|updated)|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
 
 const SIGN_IN_CODE_SUBJECTS = [
   "enter this code", "sign-in code", "sign in to", "sign-in activity",
@@ -518,7 +518,9 @@ async function fetchFromAccount(
   let timedOut = false;
   let startedAt = Date.now();
   const budgetMs = quickRefresh ? FAST_REFRESH_TIMEOUT_MS : PER_ACCOUNT_TIMEOUT_MS;
+  const connectBudgetMs = quickRefresh ? 6000 : 8000;
   let timer: number | undefined;
+  let connectTimer: number | undefined;
   const hasBudget = () => !timedOut && Date.now() - startedAt < budgetMs;
 
   const client = new ImapFlow({
@@ -563,7 +565,7 @@ async function fetchFromAccount(
         since.setDate(since.getDate() - 7);
         try {
           const found = await client.search({ from: "netflix.com", since }, { uid: true });
-          if (found?.length) netflixUids.push(...(found as number[]));
+          if (Array.isArray(found) && found.length > 0) netflixUids.push(...found);
         } catch (searchErr) {
           console.log(`[${accountLabel}] ${mailboxPath} Netflix search failed:`, searchErr);
         }
@@ -632,13 +634,18 @@ async function fetchFromAccount(
         if (!hasBudget() || (quickRefresh && allAccountQuotasFilled())) break;
         try {
           const fullMsg = await client.fetchOne(uid, { source: true, envelope: true }, { uid: true });
-          if (!fullMsg?.source) continue;
+          if (!fullMsg || !fullMsg.source) continue;
           const parsed = await simpleParser(fullMsg.source, { skipImageLinks: true, skipTextLinks: true });
           const bodyText = (parsed.text || "").trim();
           const subjectText = (parsed.subject || fullMsg.envelope?.subject || "").toString();
           const fromText = parsed.from?.text || "";
           if (!isNetflixFrom(fromText)) continue;
-          const toText = parsed.to ? (Array.isArray(parsed.to) ? parsed.to[0]?.text : parsed.to.text) : undefined;
+          const parsedRecipients = [parsed.to, parsed.cc]
+            .flatMap((value: any) => Array.isArray(value) ? value : value ? [value] : [])
+            .map((value: any) => String(value?.text || "").trim())
+            .filter(Boolean)
+            .join(", ");
+          const toText = parsedRecipients || undefined;
           const matchedAccount = selectLogicalAccount(toText, accountVariants);
           if (!matchedAccount) {
             recipientSkipped++;
@@ -680,7 +687,20 @@ async function fetchFromAccount(
   };
 
   try {
-    await client.connect();
+    await Promise.race([
+      client.connect(),
+      new Promise<never>((_, reject) => {
+        connectTimer = setTimeout(() => {
+          timedOut = true;
+          try { client.close(); } catch {}
+          reject(new Error(`IMAP connect exceeded ${connectBudgetMs}ms`));
+        }, connectBudgetMs) as unknown as number;
+      }),
+    ]);
+    if (connectTimer !== undefined) {
+      clearTimeout(connectTimer);
+      connectTimer = undefined;
+    }
     console.log(`[${accountLabel}] IMAP connected to ${imapHost}`);
     startedAt = Date.now();
     // Closing the socket is intentional: a boolean timeout cannot interrupt a
@@ -716,6 +736,7 @@ async function fetchFromAccount(
     if (!timedOut) throw err;
     console.warn(`[${accountLabel}] IMAP refresh stopped at ${budgetMs}ms budget`);
   } finally {
+    if (connectTimer !== undefined) clearTimeout(connectTimer);
     if (timer !== undefined) clearTimeout(timer);
     try { client.close(); } catch {}
   }
@@ -746,8 +767,9 @@ async function loadAccounts(supabase: any, secret: string, accountLabels: string
       if (accountLabels && accountLabels.length > 0) {
         requested = new Set(normalizeAccountLabels(accountLabels, availableLabels));
       }
-      const accountRows = requested
-        ? healedAccounts.filter((acc: any) => requested.has(String(acc.label || acc.user || "").trim()))
+      const requestedLabels = requested;
+      const accountRows = requestedLabels
+        ? healedAccounts.filter((acc: any) => requestedLabels.has(String(acc.label || acc.user || "").trim()))
         : healedAccounts;
       const decrypted = await Promise.all(accountRows.map(async (acc: any) => {
         if (!acc.user || !acc.password) return null;
@@ -804,8 +826,8 @@ async function runSync(supabase: any, secret: string, source: string, accountLab
       .order("date", { ascending: false })
       .order("id", { ascending: false })
       .limit(DEDUP_ID_LIMIT);
-    const cachedIds = new Set((cachedRows || []).map((r: any) => String(r.id)));
-    const cachedMessageIds = new Set(
+    const cachedIds = new Set<string>((cachedRows || []).map((r: any) => String(r.id)));
+    const cachedMessageIds = new Set<string>(
       (cachedRows || []).map((r: any) => String(r.message_id || "").trim().toLowerCase()).filter(Boolean),
     );
 

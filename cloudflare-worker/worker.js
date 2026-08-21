@@ -180,6 +180,7 @@ const DEFAULT_EMAIL_FILTERS = { showSignInCodes: true, showPasswordResets: true,
 const WORKER_ACCOUNT_UPDATE_RE = /(attention|action (needed|required)|account (information|info|details) (was |has been )?(changed|updated)|changes? to your account|email (address )?(was |has been )?(changed|updated)|new email address|email verification|verification email|verify (your )?(email address|phone number|mobile number|account)|confirm (your )?(email address|phone number|mobile number|account change|account)|membership (was |has been )?(cancell?ed|updated|paused)|account (was |has been )?(cancell?ed|deleted|closed|paused|on hold)|we[’']re sorry to see you go|payment (received|method|was|has been|declined|failed|updated|changed)|mobile (number )?(confirm|confirmed|verify|verified|update|updated)|phone (number )?(confirm|confirmed|verify|verified|update|updated)|verify (your )?(phone|mobile|email)|verify your email address|action needed: verify|request to make a change|update your account|make (a |any )?(change|changes) to your account)/i;
 const WORKER_PASSWORD_RESET_RE = /(password (was |has been )?(changed|reset|updated)|reset your password|forgot password|password reset|new password|account recovery)/i;
 const WORKER_SIGNIN_RE = /(sign[\s-]?in code|new sign[\s-]?in|new device|temporary access code|is using your account|access your account|verification code|login code|enter this code|otp)/i;
+const WORKER_HOUSEHOLD_RE = /(netflix household|your household|update your household|household (has been|was|is) (confirmed|updated)|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
 
 function normalizeEmailFilters(value) {
   const v = value && typeof value === "object" ? value : {};
@@ -222,6 +223,8 @@ async function readWorkerEmailFilters(env, rawToken = "") {
 
 function classifyWorkerEmail(email) {
   const text = `${email?.subject || ""} ${email?.preview || ""}`;
+  // Household/device verification must outrank broad account-update wording.
+  if (WORKER_HOUSEHOLD_RE.test(text)) return "household";
   if (WORKER_ACCOUNT_UPDATE_RE.test(text)) return "account_update";
   if (WORKER_PASSWORD_RESET_RE.test(text)) return "password_reset";
   if (email?.otp || WORKER_SIGNIN_RE.test(text)) return "signin";
@@ -239,7 +242,6 @@ function applyWorkerFilters(list, filters, session) {
     if (hideSignin && cat === "signin") return false;
     if (hideReset && cat === "password_reset") return false;
     if (hideAccountUpdate && cat === "account_update") return false;
-    if (hideReset && hideAccountUpdate && cat === "other") return false;
     return true;
   });
 }
