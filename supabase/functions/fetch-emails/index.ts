@@ -631,7 +631,11 @@ async function fetchFromAccount(
             .map((value: any) => String(value?.text || "").trim())
             .filter(Boolean)
             .join(", ");
-          const toText = parsedRecipients || undefined;
+          // Some Netflix household templates expose the recipient only in the
+          // IMAP envelope (or use BCC), while sign-in-code templates populate
+          // the parsed To header. Use both so recipient routing cannot discard
+          // household mail before it reaches the cache.
+          const toText = parsedRecipients || envelopeRecipients(fullMsg.envelope) || undefined;
           const matchedAccount = selectLogicalAccount(toText, accountVariants);
           if (!matchedAccount) {
             recipientSkipped++;
