@@ -565,6 +565,7 @@ async function fetchFromAccount(
   const connectBudgetMs = quickRefresh ? FAST_REFRESH_CONNECT_TIMEOUT_MS : 8000;
   let timer: number | undefined;
   let connectTimer: number | undefined;
+  let closeInitiated = false;
   const hasBudget = () => !timedOut && Date.now() - startedAt < budgetMs;
 
   const client = new ImapFlow({
@@ -582,7 +583,8 @@ async function fetchFromAccount(
   });
 
   const closeClient = () => {
-    if (!(client as any).usable) return;
+    if (closeInitiated || !(client as any).usable) return;
+    closeInitiated = true;
     try {
       const closing: any = client.close();
       if (closing && typeof closing.catch === "function") void closing.catch(() => {});
@@ -610,7 +612,12 @@ async function fetchFromAccount(
       // sign-in and household messages in one round trip and leaves the budget
       // for downloading only genuinely new Netflix bodies.
       if (quickRefresh && hasBudget()) {
-        const tailCount = Math.max(FAST_REFRESH_SCAN_COUNT, QUICK_REFRESH_CANDIDATE_UIDS * 2);
+        // Keep this deliberately small. Fetching 100 envelopes from Gmail was
+        // consuming the complete 8-second budget before a brand-new sign-in
+        // or household message body could be downloaded. The latest mail is at
+        // the tail, so 20 envelopes is enough for an immediate click refresh;
+        // the deeper non-interactive sync still covers the wider history.
+        const tailCount = FAST_REFRESH_SCAN_COUNT;
         const tailStart = Math.max(1, totalMessages - (tailCount - 1));
         try {
           for await (const message of client.fetch(`${tailStart}:*`, { envelope: true, uid: true })) {
