@@ -203,7 +203,7 @@ const VIS_ACCOUNT_CHANGE_STRONG_RE = /(confirm (your )?(account change|email add
 
 // Netflix household / new-device / "is this you?" emails — link-based (no OTP)
 // but MUST reach the user so they can complete verification.
-const VIS_HOUSEHOLD_RE = /(netflix household|your household|update your household|household has been confirmed|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
+const VIS_HOUSEHOLD_RE = /(netflix household|your household|update your household|household (has been|was|is) (confirmed|updated)|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
 
 function emailVisibilityCategory(row: any): "household" | "signin" | "password_reset" | "account_update" | "other" {
   const subject = String(row?.subject || "");
