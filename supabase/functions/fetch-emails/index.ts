@@ -70,7 +70,7 @@ const QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT = 25;
 // A click refresh has one wall-clock budget, including TLS, mailbox selection,
 // and message fetch. Keep it below the browser's 12-second transport deadline.
 const PER_ACCOUNT_TIMEOUT_MS = 12000;
-const FAST_REFRESH_TIMEOUT_MS = 10500;
+const FAST_REFRESH_TIMEOUT_MS = 8000;
 const FAST_REFRESH_CONNECT_TIMEOUT_MS = 6500;
 // Manual refresh must cover a busy Gmail inbox without parsing unrelated mail.
 const FAST_REFRESH_SCAN_COUNT = 20;
