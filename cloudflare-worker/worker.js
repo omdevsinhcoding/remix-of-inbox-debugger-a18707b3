@@ -1193,10 +1193,11 @@ async function handleBootstrapPublic(request, env, ctx) {
   }
 }
 
-// ==================== Inbox list_delta cache (Operation #2) ====================
-// Per-user KV cache in front of manage-app.list_delta. Only baseline snapshots
-// are cached. A delta for cursor X is mutable: mail can arrive after an empty
-// response, so caching it would hide that mail until the TTL expires.
+// ==================== Inbox list_delta proxy (Operation #2) ====================
+// Inbox responses are intentionally never cached. Baselines are mutable too:
+// a manual IMAP refresh can commit a row immediately after the snapshot, and
+// multiple Worker URLs have independent KV namespaces. Serving either cached
+// snapshot made a newly arrived message disappear until that Worker's TTL.
 const INBOX_KEY_PREFIX = "inbox:v1:user:";
 const INBOX_TTL_SECONDS = 30;
 
@@ -1231,7 +1232,7 @@ async function handleInboxList(request, env, session, rawToken, ctx) {
   const kv = getKV(env);
   const cacheKey = `${INBOX_KEY_PREFIX}${session.userId}:s${since}:b${baseline ? 1 : 0}:l${limit}`;
 
-  const cacheable = baseline || since === 0;
+  const cacheable = false;
   if (kv && cacheable) {
     const raw = await kvGet(env, cacheKey);
     if (raw) {
