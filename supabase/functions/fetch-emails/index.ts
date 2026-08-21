@@ -719,21 +719,19 @@ async function fetchFromAccount(
       closeClient();
     }, budgetMs) as unknown as number;
 
-    // Gmail can route household mail outside INBOX while sign-in codes remain
-    // in INBOX. Scan its authoritative All Mail mailbox first so both classes
-    // use one path and one fixed deadline, then fall back to INBOX elsewhere.
-    let scannedAllMail = false;
-    if (quickRefresh && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
+    // User refresh must inspect Gmail INBOX first. `[Gmail]/All Mail` can be
+    // very large and its envelope fetch was consuming the entire fixed
+    // 8-second scan budget before a fresh INBOX message was inspected (most
+    // visibly on the DDDD profile). Keep the same deadline: only use All Mail
+    // as a best-effort fallback when INBOX produced no new Netflix row.
+    await scanMailbox("INBOX", "", true);
+    if (quickRefresh && emails.length === 0 && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
       try {
-        // Gmail exposes this canonical mailbox path for IMAP clients. Avoiding
-        // LIST saves a full network round-trip from the fixed refresh budget.
-        await scanMailbox("[Gmail]/All Mail", "all:", true);
-        scannedAllMail = true;
+        await scanMailbox("[Gmail]/All Mail", "all:", false);
       } catch (fallbackErr) {
-        if (!timedOut) console.log(`[${accountLabel}] Canonical All Mail path unavailable:`, fallbackErr);
+        if (!timedOut) console.log(`[${accountLabel}] Canonical All Mail fallback unavailable:`, fallbackErr);
       }
     }
-    if (!scannedAllMail && hasBudget()) await scanMailbox("INBOX", "", true);
   } catch (err) {
     if (!timedOut) throw err;
     console.warn(`[${accountLabel}] IMAP refresh stopped at ${budgetMs}ms budget`);
