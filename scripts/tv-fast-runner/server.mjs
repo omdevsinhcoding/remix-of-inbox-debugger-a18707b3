@@ -24,7 +24,7 @@ import { execSync } from "node:child_process";
 // SERVER_VERSION is bumped whenever the on-wire /health schema, timeout
 // budget, or reporting protocol changes. If /health shows a version older
 // than this constant in the repo, the VPS is running a stale build.
-const SERVER_VERSION = "2026.08.07-18";
+const SERVER_VERSION = "2026.07.25-6";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let PACKAGE_VERSION = "unknown";
@@ -37,7 +37,6 @@ const STARTED_AT = new Date().toISOString();
 
 const PORT = Number(process.env.PORT || 8788);
 const TV_REPORT_URL = process.env.TV_REPORT_URL;
-const TV_JOB_URL = process.env.TV_JOB_URL || TV_REPORT_URL.replace(/\/manage-app\/?$/, "/tv-runner-job");
 const ENV_MAX_MS = process.env.TV_LOGIN_MAX_MS;
 const MAX_MS = Math.max(12000, Math.min(30000, Number(ENV_MAX_MS || 24000)));
 const MAX_CONCURRENT = Math.max(1, Math.min(8, Number(process.env.TV_RUNNER_CONCURRENCY || 4)));
@@ -51,7 +50,6 @@ if (!TV_REPORT_URL) {
 
 let browser = null;
 let browserLaunchInFlight = null;
-let poolRefillInFlight = null;
 let browserRelaunchCount = 0;
 let lastRelaunchAt = null;
 const warmContexts = []; // pre-created BrowserContexts ready to accept cookies
@@ -129,29 +127,16 @@ async function createWarmContext() {
 }
 
 async function refillWarmPool() {
-  if (poolRefillInFlight) return poolRefillInFlight;
-  poolRefillInFlight = (async () => {
-    while (!shuttingDown && warmContexts.length < WARM_POOL_SIZE) {
-      try {
-        const ctx = await createWarmContext();
-        // Guard against a dead browser or a target reached while this context
-        // was being created. Never allow parallel refills to overfill the pool.
-        if (!browser || !browser.isConnected() || warmContexts.length >= WARM_POOL_SIZE) {
-          try { await ctx.close(); } catch {}
-          if (!browser || !browser.isConnected()) break;
-          continue;
-        }
-        warmContexts.push(ctx);
-      } catch (e) {
-        console.error("[pool] refill failed", e instanceof Error ? e.message : e);
-        break;
-      }
+  while (!shuttingDown && warmContexts.length < WARM_POOL_SIZE) {
+    try {
+      const ctx = await createWarmContext();
+      // Guard: if browser died between await and here, discard.
+      if (!browser || !browser.isConnected()) { try { await ctx.close(); } catch {} break; }
+      warmContexts.push(ctx);
+    } catch (e) {
+      console.error("[pool] refill failed", e instanceof Error ? e.message : e);
+      break;
     }
-  })();
-  try {
-    await poolRefillInFlight;
-  } finally {
-    poolRefillInFlight = null;
   }
 }
 
@@ -163,8 +148,8 @@ async function takeWarmContext() {
   return createWarmContext();
 }
 
-async function postJson(url, body, timeoutMs = 2500) {
-  const res = await fetch(url, {
+async function postManageApp(body, timeoutMs = 2500) {
+  const res = await fetch(TV_REPORT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -173,11 +158,9 @@ async function postJson(url, body, timeoutMs = 2500) {
   const text = await res.text();
   let parsed = null;
   try { parsed = text ? JSON.parse(text) : null; } catch { parsed = { raw: text }; }
-  if (!res.ok || parsed?.success === false) throw new Error(`runner API ${body.action || "fetch_job"} failed [${res.status}]: ${text.slice(0, 300)}`);
+  if (!res.ok || parsed?.success === false) throw new Error(`manage-app ${body.action} failed [${res.status}]: ${text.slice(0, 300)}`);
   return parsed;
 }
-
-const postManageApp = (body, timeoutMs = 2500) => postJson(TV_REPORT_URL, body, timeoutMs);
 
 async function report(eventId, runnerToken, { status, result, message, screenshot_url = "" }) {
   await postManageApp({ action: "tv_login_report", event_id: eventId, runner_token: runnerToken, status, result, message, screenshot_url, run_url: "fast-runner" });
@@ -252,9 +235,8 @@ async function runTvJob(eventId, runnerToken) {
 
   try {
     stage = "fetch_job";
-    const job = await postJson(
-      TV_JOB_URL,
-      { event_id: eventId, runner_token: runnerToken },
+    const job = await postManageApp(
+      { action: "tv_login_fetch_job", event_id: eventId, runner_token: runnerToken, run_url: "fast-runner" },
       Math.min(4500, remaining()),
     );
     mark.fetch = elapsed();
@@ -267,6 +249,8 @@ async function runTvJob(eventId, runnerToken) {
     // Warm context from the pool — no launch latency on the hot path.
     context = await takeWarmContext();
     mark.browser = elapsed();
+    stage = "inject_cookies";
+    await context.addCookies(cookies);
     const page = await context.newPage();
     await page.route("**/*", (route) => {
       try {
@@ -280,7 +264,7 @@ async function runTvJob(eventId, runnerToken) {
     });
 
     stage = "open_netflix_tv8";
-    await page.goto("https://www.netflix.com/tv8", { waitUntil: "commit", timeout: Math.min(9000, remaining()) });
+    await page.goto("https://www.netflix.com/tv8", { waitUntil: "domcontentloaded", timeout: Math.min(9000, remaining()) });
     mark.nav = elapsed();
 
     stage = "wait_code_input";
@@ -305,79 +289,35 @@ async function runTvJob(eventId, runnerToken) {
     }
     const count = await digitInputs.count();
     stage = "fill_code";
-    // Netflix auto-advances focus after each character, which makes
-    // per-input .fill() calls race the DOM (the next input is briefly
-    // not actionable). Focus the first input and type via keyboard so
-    // auto-advance is handled the same way a real remote/keyboard would.
-    try {
-      await digitInputs.first().focus({ timeout: Math.min(800, remaining()) });
-      await page.keyboard.type(code, { delay: 20 });
-      const enteredCode = await digitInputs.evaluateAll((inputs) => inputs
-        .map((input) => input instanceof HTMLInputElement ? input.value : "")
-        .join("")
-        .replace(/\D/g, ""));
-      if (enteredCode !== code) throw new Error("keyboard_input_incomplete");
-    } catch {
-      // Fallback for pages where synthetic keyboard events don't trigger
-      // Netflix's auto-advance logic reliably.
-      if (count >= 8) {
-        for (let i = 0; i < 8; i++) {
-          await digitInputs.nth(i).fill(code[i], { timeout: Math.min(800, remaining()), force: true });
-        }
-      } else {
-        await digitInputs.first().fill(code, { timeout: Math.min(1000, remaining()), force: true });
-      }
+    if (count >= 8) {
+      for (let i = 0; i < 8; i++) await digitInputs.nth(i).fill(code[i], { timeout: Math.min(800, remaining()) });
+    } else {
+      await digitInputs.first().fill(code, { timeout: Math.min(1000, remaining()) });
     }
     mark.fill = elapsed();
 
-    // Keep the pairing transaction in Netflix's expected order: first open
-    // /tv8 and enter the TV's pending code, then attach the selected account
-    // session before the submit request. BrowserContext cookies apply to the
-    // already-open page's subsequent requests, including the activation POST.
-    stage = "inject_cookies";
-    await context.addCookies(cookies);
-
     stage = "submit_code";
-    const submitReady = await page.waitForFunction(() => {
+    await page.waitForFunction(() => {
       const buttons = Array.from(document.querySelectorAll("button"));
       const btn = buttons.find((b) => /enter code|continue/i.test(b.textContent || "") || b.classList.contains("tvsignup-continue-button"));
-      if (!btn || btn.disabled) return false;
-      const rect = btn.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    }, null, { timeout: Math.min(2500, remaining()) }).then(() => true).catch(() => false);
-    if (!submitReady) throw new Error("submit_button_not_ready");
-    await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll("button"));
-      const btn = buttons.find((button) => {
-        const rect = button.getBoundingClientRect();
-        return !button.disabled && rect.width > 0 && rect.height > 0 &&
-          (/enter code|continue/i.test(button.textContent || "") || button.classList.contains("tvsignup-continue-button"));
-      });
-      if (!btn) throw new Error("submit_button_missing");
-      btn.click();
-    });
+      return !!btn && !btn.disabled;
+    }, { timeout: Math.min(2500, remaining()) }).catch(() => {});
+    await page.locator('button.tvsignup-continue-button, button:has-text("Enter code"), button:has-text("Continue"), button:has-text("Sign In"), button:has-text("Submit")').first().click({ timeout: Math.min(1800, remaining()) });
     mark.submit = elapsed();
 
     stage = "wait_netflix_result";
     let bodyText = "";
-    let finalUrl = page.url();
-    const deadline = now() + Math.min(5200, remaining());
-    const isSuccessUrl = (url) => /\/tv\/out\/success(?:[/?#]|$)/i.test(url);
-    const hasConfirmedTvSuccess = (text) => /(?:your |this )?(?:tv|device)\s+(?:is\s+|has\s+been\s+)?(?:now\s+)?(?:signed\s+in|activated|linked|connected)|(?:signed\s+in|activated|linked|connected)\s+(?:successfully\s+)?(?:to|on)\s+(?:your\s+)?(?:tv|device)|(?:success|all set)[!.\s-]+(?:your |this )?(?:tv|device)/i.test(text);
+    const deadline = now() + Math.min(9000, remaining());
     while (now() < deadline) {
-      await page.waitForTimeout(120);
+      await page.waitForTimeout(180);
       bodyText = (await page.locator("body").innerText().catch(() => "")).toLowerCase();
-      finalUrl = page.url();
-      if (isSuccessUrl(finalUrl) || hasConfirmedTvSuccess(bodyText) || /invalid|incorrect|wrong|not recognized|try again|expired/i.test(bodyText)) break;
+      if (/success|signed in|logged in|welcome|activated|linked|connected|invalid|incorrect|wrong|not recognized|try again|expired/i.test(bodyText)) break;
+      if (!/\/tv8/i.test(page.url())) break;
     }
-    // Re-read the settled page after a redirect. This prevents stale pre-redirect
-    // text from turning a login/error navigation into a false success report.
-    finalUrl = page.url();
-    bodyText = (await page.locator("body").innerText().catch(() => bodyText)).toLowerCase();
     mark.result = elapsed();
 
     let status = "error", result = "unknown", message = "Unable to determine result from page";
-    if (isSuccessUrl(finalUrl) || hasConfirmedTvSuccess(bodyText)) {
+    if (/success|signed in|logged in|welcome|activated|linked|connected/i.test(bodyText) || !/\/tv8/i.test(page.url())) {
       status = "success"; result = "success"; message = "TV signed in successfully";
     } else if (/invalid|incorrect|wrong|couldn.?t|not recognized|try again/i.test(bodyText)) {
       status = "invalid_code"; result = "invalid_code"; message = "Netflix rejected the code";

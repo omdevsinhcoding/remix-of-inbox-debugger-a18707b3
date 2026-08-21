@@ -993,11 +993,9 @@ export type Database = {
           publish_at: string | null
           rating: number | null
           show_frequency: string | null
-          sort_order: number | null
           sub_kind: string | null
           target_user_id: string | null
           title: string
-          updated_at: string
         }
         Insert: {
           action_label?: string | null
@@ -1029,11 +1027,9 @@ export type Database = {
           publish_at?: string | null
           rating?: number | null
           show_frequency?: string | null
-          sort_order?: number | null
           sub_kind?: string | null
           target_user_id?: string | null
           title: string
-          updated_at?: string
         }
         Update: {
           action_label?: string | null
@@ -1065,11 +1061,9 @@ export type Database = {
           publish_at?: string | null
           rating?: number | null
           show_frequency?: string | null
-          sort_order?: number | null
           sub_kind?: string | null
           target_user_id?: string | null
           title?: string
-          updated_at?: string
         }
         Relationships: []
       }

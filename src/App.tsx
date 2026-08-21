@@ -1,6 +1,6 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useRef, useMemo, Suspense, lazy } from "react";
 import { createPortal } from "react-dom";
-import { Mail, RefreshCw, ShieldCheck, Shield, Clock, AlertCircle, Copy, Check, ArrowLeft, Lock, Key, LogOut, Settings, Plus, Users, Trash2, CheckCircle2, X, Eye, EyeOff, KeyRound, Filter, Server, Globe, Edit, Info, UserCircle, Search, ChevronRight, Bell, Send, MessageSquare, Image as ImageIcon, ExternalLink, AlertTriangle, Sparkles, Megaphone, Wrench, CreditCard, Tag, ChevronDown, ChevronUp, HardDrive, Upload, Zap, BookOpen, GraduationCap, Film, PlayCircle, Pin, MapPin, MapPinOff, Tv, Loader2, Download, ClipboardPaste, Link as LinkIcon, Activity, HelpCircle, Code2 } from "lucide-react";
+import { Mail, RefreshCw, ShieldCheck, Shield, Clock, AlertCircle, Copy, Check, ArrowLeft, Lock, Key, LogOut, Settings, Plus, Users, Trash2, CheckCircle2, X, Eye, EyeOff, KeyRound, Filter, Server, Globe, Edit, Info, UserCircle, Search, ChevronRight, Bell, Send, MessageSquare, Image as ImageIcon, ExternalLink, AlertTriangle, Sparkles, Megaphone, Wrench, CreditCard, Tag, ChevronDown, ChevronUp, HardDrive, Upload, Zap, BookOpen, GraduationCap, Film, PlayCircle, Pin, MapPin, MapPinOff, Tv, Loader2, Download, ClipboardPaste, Link as LinkIcon, Activity, HelpCircle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from "react-router";
 import NetflixHouseholdVerificationGuide from "./pages/NetflixHouseholdVerificationGuide";
@@ -12,8 +12,7 @@ import { WorkflowChooser, ViewSwitcher, DirectLinkView, useWorkflowView, resolve
 
 import { supabase } from "./integrations/supabase/client";
 import { AVATAR_CATEGORIES, resolveAvatar, buildAvatarId, prettyName, getAvatarCategoryUrls } from "./lib/avatars";
-import { bootstrapFromSupabase, fastClearCookiesRedirect, revokeSessionInBackground, markSessionStart, readBootstrapCache, refreshBootstrap, patchBootstrapCacheUser, getEmailFilters, setEmailFilters as setEmailFiltersCache, getFreeAvatarCooldown, setFreeAvatarCooldown, markNotificationRead, markAllNotificationsRead, deleteNotificationForMe, hasPoppedNotif, markNotifPopped, compareNotifications, adminListRecipients, adminDeleteNotificationForUser, type EmailFilters, type AppNotification, type MaintenanceInfo, type NotificationRecipient } from "./lib/bootstrap";
-import DevelopersPage, { DeveloperPill } from "./components/DeveloperShowcase";
+import { bootstrapFromSupabase, fastClearCookiesRedirect, revokeSessionInBackground, markSessionStart, readBootstrapCache, refreshBootstrap, patchBootstrapCacheUser, getEmailFilters, setEmailFilters as setEmailFiltersCache, getFreeAvatarCooldown, setFreeAvatarCooldown, markNotificationRead, markAllNotificationsRead, markNotificationSeen, deleteNotificationForMe, logNotificationEvent, getPoppedIds, markPopped, adminListRecipients, adminDeleteNotificationForUser, type EmailFilters, type AppNotification, type MaintenanceInfo, type NotificationRecipient } from "./lib/bootstrap";
 import MaintenanceScreen from "./components/MaintenanceScreen";
 import DateTimePicker from "./components/DateTimePicker";
 import { clearBrowserIdentityNow, sessionGet, sessionSet, sessionRemove, nukeBrowserIdentity } from "./lib/session";
@@ -306,12 +305,10 @@ const SESSION_CONFIG_KEY_FOR = (role: "admin" | "user") =>
 const SESSION_TIMEOUT_CACHE_KEY = (role: "admin" | "user") =>
   role === "admin" ? "admin_session_timeout_min" : "user_session_timeout_min";
 
-// NOTE: no hardcoded session length. The only source of truth is the
-// admin-configured `session_config` / `admin_session_config` value (cached in
-// sessionStorage for the tab) with the server-issued access-token expiry as
-// the fallback. A local default would show a different countdown on the
-// workflow-selection screen than inside a workflow.
-const SESSION_TIMEOUT_EVENT = "app:session-timeout-minutes";
+const DEFAULT_SESSION_TIMEOUT_MINUTES: Record<"admin" | "user", number> = {
+  admin: 60,
+  user: 5,
+};
 
 function readSessionNumber(key: "session_started_at" | "session_expires_at"): number {
   const value = Number(sessionGet(key as any) || "0");
@@ -336,41 +333,19 @@ function writeCachedTimeoutMinutes(role: "admin" | "user", minutes: number): voi
   try {
     if (Number.isFinite(minutes) && minutes > 0) {
       sessionSet(SESSION_TIMEOUT_CACHE_KEY(role) as any, String(Math.floor(minutes)));
-      try {
-        window.dispatchEvent(new CustomEvent(SESSION_TIMEOUT_EVENT, { detail: { role, minutes: Math.floor(minutes) } }));
-      } catch {}
     }
   } catch {}
-}
-
-// One shared in-flight fetch per role so the countdown pill and the timeout
-// guard never disagree (and never double-request the setting).
-const timeoutFetches: Partial<Record<"admin" | "user", Promise<number>>> = {};
-function loadSessionTimeoutMinutes(role: "admin" | "user"): Promise<number> {
-  if (!timeoutFetches[role]) {
-    timeoutFetches[role] = (async () => {
-      try {
-        const res = await apiCall("manage-app", { action: "get_settings", key: SESSION_CONFIG_KEY_FOR(role) });
-        const m = Number(res?.value?.timeoutMinutes) || 0;
-        if (m > 0) writeCachedTimeoutMinutes(role, m);
-        return m;
-      } catch {
-        return readCachedTimeoutMinutes(role);
-      } finally {
-        // allow a later refetch (e.g. admin changed the value) after this resolves
-        setTimeout(() => { delete timeoutFetches[role]; }, 30_000);
-      }
-    })();
-  }
-  return timeoutFetches[role]!;
 }
 
 function getSessionDeadline(role: "admin" | "user", minutes?: number): number {
   const started = readSessionNumber("session_started_at");
   const accessExpiresAt = readSessionNumber("session_expires_at");
   const explicit = Number.isFinite(Number(minutes)) && Number(minutes) > 0 ? Number(minutes) : 0;
-  // explicit (fresh from server) → cached configured → server access expiry.
-  const configuredMinutes = explicit || readCachedTimeoutMinutes(role);
+  // Prefer explicit (fresh from server) → cached configured → default. Using the
+  // default synchronously on remount would nuke long admin windows (e.g. 60min
+  // default vs 180min configured) as soon as elapsed exceeds 60min, before the
+  // async settings fetch had a chance to re-arm.
+  const configuredMinutes = explicit || readCachedTimeoutMinutes(role) || DEFAULT_SESSION_TIMEOUT_MINUTES[role];
   const configuredDeadline = started && configuredMinutes > 0 ? started + configuredMinutes * 60_000 : 0;
   return configuredDeadline || accessExpiresAt || 0;
 }
@@ -380,9 +355,8 @@ function getSessionTotalMinutes(role: "admin" | "user", minutes?: number): numbe
   const deadline = getSessionDeadline(role, minutes);
   if (started && deadline > started) return Math.max(1, Math.ceil((deadline - started) / 60_000));
   const explicit = Number.isFinite(Number(minutes)) && Number(minutes) > 0 ? Number(minutes) : 0;
-  return explicit || readCachedTimeoutMinutes(role);
+  return explicit || readCachedTimeoutMinutes(role) || DEFAULT_SESSION_TIMEOUT_MINUTES[role];
 }
-
 
 
 // --- Worker URL Types & Helpers ---
@@ -510,6 +484,7 @@ type LoginLocationPayload = {
   timestamp?: number;
   error?: string;
   publicIp?: string;
+  publicIpSource?: "ipwho.is";
   device?: DeviceFingerprint;
 };
 
@@ -748,10 +723,8 @@ function beginDeviceFingerprintCapture(): Promise<DeviceFingerprint> {
 }
 
 
-// Begin GPS when the profile is selected, while the user is entering their
-// password / solving CAPTCHA. Keep the final-submit fallback short so an
-// already-allowed browser never sits on the login screen for many seconds.
-const LOGIN_GEO_TIMEOUT_MS = 6_000;
+const LOGIN_GEO_TIMEOUT_MS = 45_000;
+const LOGIN_HANDSHAKE_TIMEOUT_MS = 15_000;
 const LOGIN_EDGE_TIMEOUT_MS = 45_000;
 const GPS_PERMISSION_TOAST_ID = "gps-permission-blocked";
 const GPS_PERMISSION_REQUIRED_MESSAGE = "Allow location to sign in.";
@@ -761,7 +734,7 @@ type GpsPermissionMode = "needed" | "blocked";
 
 function isGpsPermissionDeniedMessage(message: string) {
   const m = message.toLowerCase();
-  return m.includes("gps permission denied") || m.includes("location permission denied") || m.includes("allow location") || m.includes("location blocked") || m.includes("browser location popup");
+  return m.includes("gps permission") || m.includes("gps coordinates missing") || m.includes("gps timed out") || m.includes("device gps unavailable") || m.includes("location permission") || m.includes("allow location") || m.includes("location blocked") || m.includes("browser location popup") || m.includes("does not support gps");
 }
 
 function getGpsPermissionMode(message: string): GpsPermissionMode {
@@ -787,8 +760,8 @@ function showGpsPermissionToast(message: string) {
 }
 
 
-async function fetchBrowserPublicIp(): Promise<Pick<LoginLocationPayload, "publicIp">> {
-  // Encrypted-only mode: no third-party browser IP lookups.
+async function fetchBrowserPublicIp(): Promise<Pick<LoginLocationPayload, "publicIp" | "publicIpSource">> {
+  // Encrypted-only mode: disable third-party browser IP lookups.
   return {};
 }
 
@@ -802,19 +775,12 @@ function buildLocationSignInMessage(location: LoginLocationPayload): string {
   if (location.status === "unsupported") {
     return "This browser/device does not support GPS location. Use Chrome/Firefox with location services enabled.";
   }
-  // Permission IS granted (typical in Incognito and on laptops without a GPS
-  // chip) but no coordinate fix arrived. This is an accepted login state and
-  // must never be surfaced as a blocking "not ready" error.
-  if (location.permissionState === "granted" && (location.status === "timeout" || location.status === "unavailable" || location.status === "error")) {
-    return "Location permission is enabled.";
-  }
   if (location.status === "timeout") {
     return "GPS request timed out. Enable device Location/Precise Location and try again.";
   }
   if (location.status === "unavailable") {
     return `Device GPS is unavailable right now (${location.error || "position unavailable"}). Turn on device Location and try again.`;
   }
-
   if (location.status === "error") {
     return `GPS error: ${location.error || "unknown error"}.`;
   }
@@ -865,45 +831,25 @@ function beginGeolocationCapture(): Promise<LoginLocationPayload> {
         timestamp: pos.timestamp,
       });
     };
-    const readPermissionState = async (): Promise<LoginLocationPayload["permissionState"]> => {
-      try {
-        if (navigator.permissions?.query) {
-          const permission = await navigator.permissions.query({ name: "geolocation" as PermissionName });
-          return permission.state;
-        }
-      } catch {}
-      return "unknown";
-    };
-    // Ask for the fast network/Wi-Fi fix first. Starting with high accuracy made
-    // already-authorized phones and laptops wait for a GPS satellite fix for
-    // several seconds even though a valid browser location was immediately
-    // available. Escalate once only when the fast fix is unavailable.
-    let accurateRetryDone = false;
     const onError = async (err: GeolocationPositionError) => {
-      console.warn("[GPS] error code:", err.code, "message:", err.message);
-      const permissionState = await readPermissionState();
-      const retryable = err.code === err.TIMEOUT || err.code === err.POSITION_UNAVAILABLE;
-      if (retryable && !accurateRetryDone && permissionState !== "denied" && !settled) {
-        accurateRetryDone = true;
-        try {
-          navigator.geolocation.getCurrentPosition(onSuccess, onError, {
-            enableHighAccuracy: true,
-            timeout: Math.max(2_000, LOGIN_GEO_TIMEOUT_MS - (Date.now() - startedAt) - 500),
-            maximumAge: 300_000,
-          });
-          return;
-        } catch {}
-      }
+      console.error("[GPS] error code:", err.code, "message:", err.message);
       let status: LoginLocationPayload["status"] = "error";
       if (err.code === err.PERMISSION_DENIED) status = "denied";
       else if (err.code === err.POSITION_UNAVAILABLE) status = "unavailable";
       else if (err.code === err.TIMEOUT) status = "timeout";
-      finish({ status, permissionState, error: err.message || `code ${err.code}` });
+      let nextPermissionState: LoginLocationPayload["permissionState"] = "unknown";
+      try {
+        if (navigator.permissions?.query) {
+          const permission = await navigator.permissions.query({ name: "geolocation" as PermissionName });
+          nextPermissionState = permission.state;
+        }
+      } catch {}
+      finish({ status, permissionState: nextPermissionState, error: err.message || `code ${err.code}` });
     };
     const options: PositionOptions = {
-      enableHighAccuracy: false,
-      timeout: Math.min(2_500, LOGIN_GEO_TIMEOUT_MS),
-      maximumAge: 300_000,
+      enableHighAccuracy: true,
+      timeout: LOGIN_GEO_TIMEOUT_MS,
+      maximumAge: 0,
     };
     // FIRE FIRST — before setTimeout / any other work — to preserve user activation.
     // Use one GPS request only; starting getCurrentPosition + watchPosition caused
@@ -915,13 +861,10 @@ function beginGeolocationCapture(): Promise<LoginLocationPayload> {
       return;
     }
     timer = window.setTimeout(() => {
-      void readPermissionState().then((permissionState) => {
-        finish({ status: "timeout", permissionState, error: "GPS fix timed out." });
-      });
+      finish({ status: "timeout", permissionState: "unknown", error: "GPS fix timed out." });
     }, LOGIN_GEO_TIMEOUT_MS);
   });
 }
-
 
 // Async variant kept for non-gesture code paths (auto-recovery etc.).
 async function collectLoginLocation(): Promise<LoginLocationPayload> {
@@ -930,11 +873,7 @@ async function collectLoginLocation(): Promise<LoginLocationPayload> {
 
 async function requireLoginLocation(preStarted?: Promise<LoginLocationPayload> | null, preStartedDevice?: Promise<DeviceFingerprint> | null): Promise<LoginLocationPayload> {
   const location = await (preStarted ?? beginGeolocationCapture());
-  // Permission is the login gate. Some allowed desktop/mobile browsers do not
-  // return a coordinate fix reliably; that must not trap the user in a retry
-  // loop. Preserve the status for telemetry and continue when permission itself
-  // is granted. Only an explicit browser denial blocks sign-in.
-  if (location.permissionState !== "granted" && location.status !== "granted") {
+  if (location.status !== "granted" || typeof location.latitude !== "number" || typeof location.longitude !== "number") {
     throw new Error(buildLocationSignInMessage(location));
   }
   const [publicIp, device] = await Promise.all([fetchBrowserPublicIp(), preStartedDevice ?? collectDeviceFingerprint()]);
@@ -942,11 +881,7 @@ async function requireLoginLocation(preStarted?: Promise<LoginLocationPayload> |
 }
 
 function hasGrantedLocation(location: LoginLocationPayload | null | undefined): location is LoginLocationPayload {
-  // Keep this predicate aligned with requireLoginLocation() and the backend:
-  // browser permission is the gate, coordinates are best-effort telemetry.
-  // Requiring latitude/longitude here caused Incognito to discard an accepted
-  // `permissionState: granted` timeout and launch another GPS request forever.
-  return location?.permissionState === "granted" || location?.status === "granted";
+  return location?.status === "granted" && typeof location.latitude === "number" && typeof location.longitude === "number";
 }
 
 function GpsPermissionSheet({ mode, loading, onEnable, onPrimeEnable }: { mode: GpsPermissionMode | null; loading: boolean; onEnable: () => void; onPrimeEnable?: () => void }) {
@@ -1036,9 +971,7 @@ async function apiCall(functionName: string, body: any) {
     if (t2) extraHeaders["X-Session-Token"] = t2;
   }
 
-  // NOTE: timeouts are intentionally NOT transient here — secureTransport
-  // already retried them once. Retrying again stacked minutes of waiting.
-  const isTransientEdgeError = (value: unknown) => !/timed out/i.test(String((value as any)?.message || value || "")) && /Secure connection|handshake|Failed to fetch|NetworkError|busy|temporar|unknown session|bad frame|non-binary|stale request|replay|origin mismatch/i.test(
+  const isTransientEdgeError = (value: unknown) => /Secure connection|handshake|Failed to fetch|NetworkError|busy|timeout|temporar|unknown session|bad frame|non-binary|stale request|replay|origin mismatch/i.test(
     value instanceof Error ? value.message : String(value || ""),
   );
 
@@ -1057,7 +990,7 @@ async function apiCall(functionName: string, body: any) {
         const t3 = getSessionToken();
         if (t3) extraHeaders["X-Session-Token"] = t3;
         data = await invokeEdge(functionName, body, { headers: extraHeaders });
-      } else if (functionName !== "fetch-emails" && isTransientEdgeError(err)) {
+      } else if (isTransientEdgeError(err)) {
         await new Promise((r) => setTimeout(r, 750));
         const t4 = getSessionToken();
         if (t4) extraHeaders["X-Session-Token"] = t4;
@@ -1073,13 +1006,6 @@ async function apiCall(functionName: string, body: any) {
     if (data?.refreshToken || data?.expiresAt) {
       storeSessionPair(data);
     }
-    // Authoritative auto-logout length shipped with every login response —
-    // cached before first paint so the countdown never shows a guessed default.
-    if (Number(data?.sessionTimeoutMinutes) > 0) {
-      const r = data?.user?.role === "admin" ? "admin" : "user";
-      writeCachedTimeoutMinutes(r, Math.floor(Number(data.sessionTimeoutMinutes)));
-    }
-
     // Plan-expiry surface: any endpoint (login, me, ...) that returns
     // { success: false, error: "plan_finished", ... } is broadcast globally
     // so a friendly "Plan Finished" screen can render — regardless of caller.
@@ -1371,12 +1297,16 @@ function useSessionTimeoutGuard(role: "admin" | "user", enabled = true) {
     armForDeadline(getSessionDeadline(role));
 
     (async () => {
-      const minutes = await loadSessionTimeoutMinutes(role);
+      let minutes = 0;
+      try {
+        const res = await apiCall("manage-app", { action: "get_settings", key: SESSION_CONFIG_KEY_FOR(role) });
+        minutes = Number(res?.value?.timeoutMinutes) || 0;
+      } catch {}
       if (cancelled) return;
+      if (minutes > 0) writeCachedTimeoutMinutes(role, minutes);
       if (!minutes || minutes <= 0) return;
       armForDeadline(getSessionDeadline(role, minutes));
     })();
-
 
     return () => {
       cancelled = true;
@@ -1438,8 +1368,12 @@ const CATEGORY_META: Record<string, { label: string; icon: any; color: string }>
   promo:        { label: "Offer",        icon: Tag,           color: "text-pink-300" },
   billing:      { label: "Billing",      icon: CreditCard,    color: "text-cyan-300" },
 };
-// Single neutral accent — notification priority levels were removed on purpose.
-const NOTIF_ACCENT = "bg-slate-900";
+const PRIORITY_ACCENT: Record<string, string> = {
+  low: "bg-zinc-500",
+  normal: "bg-sky-500",
+  high: "bg-amber-500",
+  critical: "bg-rose-500",
+};
 
 function categoryMeta(cat?: string | null) {
   return CATEGORY_META[cat || "announcement"] || CATEGORY_META.announcement;
@@ -1488,19 +1422,7 @@ function useNotifications() {
     invalidateNotifications();
   }, []);
 
-  // Display order is decided in the admin panel (Order field), newest first
-  // for anything without an explicit order.
-  const orderedItems = useMemo(() => [...items].sort(compareNotifications), [items]);
-
-  return { items: orderedItems, setItems, loading, refresh };
-}
-
-// Password / security notices always come before regular announcements.
-function popupRank(n: AppNotification): number {
-  const cat = (n.category || "").toLowerCase();
-  const sub = (n.sub_kind || "").toLowerCase();
-  if (cat === "security" || sub.includes("password") || sub.includes("reset")) return 0;
-  return 1;
+  return { items, setItems, loading, refresh };
 }
 
 // ---------- Auto-popup: premium modal shown on first sight of a notification ----------
@@ -1508,62 +1430,39 @@ function AutoPopupNotification() {
   const { user } = useAuth();
   const [queue, setQueue] = useState<AppNotification[]>([]);
   const [dismissing, setDismissing] = useState(false);
-  const shownRef = useRef<Set<string>>(new Set());
-  const pausedRef = useRef(false);
-
-  useEffect(() => {
-    // This component can survive logout/profile switches — reset local state so
-    // one profile can never suppress another profile's popups.
-    shownRef.current = new Set();
-    setQueue([]);
-  }, [user?.id]);
-
-  useEffect(() => {
-    const pause = () => { pausedRef.current = true; };
-    const resume = () => {
-      pausedRef.current = false;
-      window.dispatchEvent(new CustomEvent("notif:refresh"));
-    };
-    window.addEventListener("notif:pausePopup", pause);
-    window.addEventListener("notif:resumePopup", resume);
-    return () => {
-      window.removeEventListener("notif:pausePopup", pause);
-      window.removeEventListener("notif:resumePopup", resume);
-    };
-  }, []);
+  const seenRef = useRef<Set<string>>(getPoppedIds());
 
   useEffect(() => {
     let alive = true;
     let unsub: (() => void) | null = null;
     const process = (list: AppNotification[]) => {
-      if (pausedRef.current) return;
-      // Popup eligibility depends ONLY on the admin-set frequency rule:
-      //   "once"    → one time per profile, ever
-      //   "session" → once for every login session
-      // Read/seen state is intentionally not part of this decision, which is why
-      // older notifications no longer vanish silently.
       const fresh = list.filter((n) =>
-        (n.mode || "popup") !== "silent" &&
-        !shownRef.current.has(n.id) &&
-        !hasPoppedNotif(n)
+        !seenRef.current.has(n.id) &&
+        !n.read &&
+        (!n.snoozed_until || new Date(n.snoozed_until) < new Date())
       );
       if (fresh.length) {
+        // Priority order (kid-friendly rule):
+        // 1) Security / password-reset notifications first (force to top).
+        // 2) Then admin announcements in FIFO order (oldest unseen first) —
+        //    so a brand-new user's first login shows the first admin message first.
+        // 3) Everything else after, newest first.
+        const rank = (n: AppNotification): number => {
+          const cat = (n.category || "").toLowerCase();
+          const sub = (n.sub_kind || "").toLowerCase();
+          if (cat === "security" || sub.includes("password") || sub.includes("reset")) return 0;
+          if (cat === "announcement" || cat === "update" || cat === "maintenance") return 1;
+          return 2;
+        };
         fresh.sort((a, b) => {
-          const ra = popupRank(a), rb = popupRank(b);
+          const ra = rank(a), rb = rank(b);
           if (ra !== rb) return ra - rb;
-          return compareNotifications(a, b);
+          const cra = a.priority === "critical" ? 1 : 0, crb = b.priority === "critical" ? 1 : 0;
+          if (cra !== crb) return crb - cra;
+          const ta = new Date(a.created_at).getTime(), tb = new Date(b.created_at).getTime();
+          return ra === 1 ? ta - tb : tb - ta;
         });
-        const next = fresh.slice(0, 5);
-        // Reserve at enqueue time. Both responsive headers stay mounted, and
-        // repeated store emissions must never enqueue the same popup twice.
-        next.forEach((n) => {
-          shownRef.current.add(n.id);
-          markNotifPopped(n);
-        });
-        setQueue((existing) => {
-          const queued = new Set(existing.map((n) => n.id));
-          return [...existing, ...next.filter((n) => !queued.has(n.id))];
-        });
+        setQueue((prev) => (prev.length ? prev : fresh.slice(0, 3)));
       }
     };
     (async () => {
@@ -1582,18 +1481,22 @@ function AutoPopupNotification() {
     if (!current) return;
     // hide session countdown while modal is open
     window.dispatchEvent(new CustomEvent("notif:open"));
+    logNotificationEvent(current.id, "delivered").catch(() => {});
+    markNotificationSeen([current.id]).catch(() => {});
     return () => { window.dispatchEvent(new CustomEvent("notif:close")); };
   }, [current?.id]);
 
   const dismiss = async (opened = false) => {
     if (!current) return;
     setDismissing(true);
+    markPopped(current.id);
+    seenRef.current.add(current.id);
+    if (!opened) await logNotificationEvent(current.id, "dismissed").catch(() => {});
     setTimeout(() => {
       setDismissing(false);
       setQueue((q) => q.slice(1));
     }, 180);
   };
-
 
   const openInBell = () => {
     dismiss(true);
@@ -1603,7 +1506,7 @@ function AutoPopupNotification() {
   if (!current || typeof document === "undefined") return null;
   const cat = categoryMeta(current.category);
   const CatIcon = cat.icon;
-  const accent = NOTIF_ACCENT;
+  const accent = PRIORITY_ACCENT[current.priority || "normal"] || PRIORITY_ACCENT.normal;
 
   return createPortal(
     <AnimatePresence>
@@ -1703,7 +1606,7 @@ function AutoPopupNotification() {
                     href={current.action_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    onClick={() => { markNotificationRead(current.id).catch(() => {}); dismiss(true); }}
+                    onClick={() => { logNotificationEvent(current.id, "clicked", { url: current.action_url }).catch(() => {}); markNotificationRead(current.id).catch(() => {}); dismiss(true); }}
                     className="flex-1 py-3 rounded-xl text-[14px] font-bold text-white bg-slate-900 hover:bg-slate-800 flex items-center justify-center gap-1.5 transition-colors"
                   >
                     {current.action_label} <ExternalLink className="w-3.5 h-3.5" />
@@ -1750,6 +1653,9 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
     if (!open) { setSelected(null); return; }
     if (initialId) setSelected(initialId);
     window.dispatchEvent(new CustomEvent("notif:open"));
+    // mark visible as seen
+    const visibleIds = items.filter((n) => !n.seen).map((n) => n.id);
+    if (visibleIds.length) markNotificationSeen(visibleIds).catch(() => {});
     if (isMobile) {
       const prev = document.body.style.overflow;
       document.body.style.overflow = "hidden";
@@ -1896,7 +1802,7 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
             {rows.map((n) => {
               const cat = categoryMeta(n.category);
               const CatIcon = cat.icon;
-              const accent = NOTIF_ACCENT;
+              const accent = PRIORITY_ACCENT[n.priority || "normal"] || PRIORITY_ACCENT.normal;
               return (
                 <li key={n.id} className="group relative">
                   <button
@@ -1954,7 +1860,7 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
   const Detail = detail && (() => {
     const cat = categoryMeta(detail.category);
     const CatIcon = cat.icon;
-    const accent = NOTIF_ACCENT;
+    const accent = PRIORITY_ACCENT[detail.priority || "normal"] || PRIORITY_ACCENT.normal;
     return (
       <div className="overflow-y-auto overscroll-contain flex-1 bg-white">
         {detail.image_url && (
@@ -1990,12 +1896,14 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
           <div className="mt-6 flex flex-wrap gap-2">
             {detail.action_url && detail.action_label && !/snooze|archive|24h/i.test(detail.action_label) && (
               <a href={detail.action_url} target="_blank" rel="noopener noreferrer"
+                onClick={() => logNotificationEvent(detail.id, "clicked", { url: detail.action_url }).catch(() => {})}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-bold bg-slate-900 text-white hover:bg-slate-800 transition-colors">
                 {detail.action_label} <ExternalLink className="w-3.5 h-3.5" />
               </a>
             )}
             {detail.action2_url && detail.action2_label && !/snooze|archive|24h/i.test(detail.action2_label) && (
               <a href={detail.action2_url} target="_blank" rel="noopener noreferrer"
+                onClick={() => logNotificationEvent(detail.id, "clicked", { url: detail.action2_url, secondary: true }).catch(() => {})}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-semibold bg-slate-100 text-slate-900 hover:bg-slate-200 transition-colors">
                 {detail.action2_label}
               </a>
@@ -2116,13 +2024,13 @@ function NotificationBell() {
 
   const active = items;
   const unread = active.filter((n) => !n.read).length;
-  // Session-frequency notifications always advertise themselves on each login;
-  // one-time notifications advertise until read. Keep this distinct from the
-  // red workflow-switch indicator.
-  const needsAttention = active.some((n) =>
-    (n.mode || "popup") !== "silent" &&
-    (String(n.show_frequency || "once") === "session" || !n.read)
-  );
+  const highestPriority = active.filter((n) => !n.read).reduce<string>((acc, n) => {
+    const rank = (p?: string) => ({ low: 1, normal: 2, high: 3, critical: 4 } as any)[p || "normal"] || 2;
+    return rank(n.priority) > rank(acc) ? (n.priority || "normal") : acc;
+  }, "normal");
+  const dotColor = highestPriority === "critical" ? "bg-rose-500"
+    : highestPriority === "high" ? "bg-amber-500"
+    : "bg-rose-500";
 
   return (
     <>
@@ -2133,10 +2041,11 @@ function NotificationBell() {
         aria-label={`Notifications (${unread} unread)`}
       >
         <Bell className={`w-4 h-4 sm:w-5 sm:h-5 ${unread > 0 ? "animate-pulse" : ""}`} />
-        {needsAttention && (
-          <span aria-hidden className="notification-attention-dot">
-            <span className="notification-attention-dot-ping" />
-          </span>
+        {unread > 0 && (
+          <>
+            <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full animate-ping ${dotColor}`} />
+            <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white ${dotColor}`} />
+          </>
         )}
       </button>
       <NotificationCenter
@@ -2147,6 +2056,7 @@ function NotificationBell() {
         loading={loading}
         onChange={refresh}
       />
+      <AutoPopupNotification />
     </>
   );
 }
@@ -2247,42 +2157,46 @@ function formatTvDuration(start?: string | null, end?: string | null): string {
 function TvRunDetails({ info, status, code, theme = "light" }: { info: TvRunInfo; status: TvLoginStatus; code?: string; theme?: "dark" | "light" }) {
   if (!info?.eventId && !info?.createdAt) return null;
   const dark = theme === "dark";
+  const terminal = TV_TERMINAL_STATUSES.has(status);
   const active = TV_ACTIVE_STATUSES.has(status);
   const tone = status === "success" ? "emerald" : active ? "rose" : status === "idle" ? "slate" : "amber";
   const shell = dark
-    ? "border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] text-white"
-    : "border-slate-200/80 bg-gradient-to-br from-white to-slate-50 text-slate-900";
-  const muted = dark ? "text-white/50" : "text-slate-400";
+    ? "border-white/10 bg-white/[0.04] text-white"
+    : "border-slate-200 bg-slate-50/80 text-slate-900";
+  const muted = dark ? "text-white/55" : "text-slate-500";
   const value = dark ? "text-white" : "text-slate-900";
-  const cell = dark ? "bg-black/25 border border-white/5" : "bg-white border border-slate-100";
   const badge = tone === "emerald"
     ? dark ? "bg-emerald-500/15 text-emerald-200 border-emerald-400/25" : "bg-emerald-50 text-emerald-700 border-emerald-200"
     : tone === "rose"
       ? dark ? "bg-rose-500/15 text-rose-200 border-rose-400/25" : "bg-rose-50 text-rose-700 border-rose-200"
       : dark ? "bg-amber-500/15 text-amber-200 border-amber-400/25" : "bg-amber-50 text-amber-700 border-amber-200";
-  const dot = tone === "emerald" ? "bg-emerald-500" : tone === "rose" ? "bg-rose-500 animate-pulse" : "bg-amber-500";
-  const label = status === "success" ? "Signed in" : active ? "In progress" : "Completed";
+  const label = status === "success" ? "Process completed" : active ? "Process running" : "Process ended";
   return (
-    <div className={`mt-5 rounded-3xl border p-4 shadow-sm ${shell}`}>
+    <div className={`mt-5 rounded-2xl border p-4 ${shell}`}>
       <div className="flex items-center justify-between gap-3">
-        <div className={`text-[10px] uppercase tracking-[0.18em] font-black ${muted}`}>TV sign-in</div>
-        <div className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${badge}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
-          {label}
-        </div>
+        <div className={`text-[10px] uppercase tracking-[0.18em] font-black ${muted}`}>TV sign-in details</div>
+        <div className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${badge}`}>{label}</div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] sm:text-xs">
-        <div className={`rounded-2xl px-3 py-2.5 ${cell}`}>
+        <div className={`rounded-xl px-3 py-2 ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
           <div className={muted}>Started</div>
           <div className={`mt-0.5 font-bold ${value}`}>{formatTvRunTime(info.createdAt)}</div>
         </div>
-        <div className={`rounded-2xl px-3 py-2.5 ${cell}`}>
+        <div className={`rounded-xl px-3 py-2 ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
+          <div className={muted}>{terminal ? "Finished" : "Running for"}</div>
+          <div className={`mt-0.5 font-bold ${value}`}>{terminal ? formatTvRunTime(info.finishedAt) : formatTvDuration(info.createdAt, null)}</div>
+        </div>
+        <div className={`rounded-xl px-3 py-2 ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
+          <div className={muted}>Taken time</div>
+          <div className={`mt-0.5 font-bold ${value}`}>{formatTvDuration(info.createdAt, info.finishedAt)}</div>
+        </div>
+        <div className={`rounded-xl px-3 py-2 ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
           <div className={muted}>Code</div>
-          <div className={`mt-0.5 font-bold tabular-nums tracking-wider ${value}`}>{code || "—"}</div>
+          <div className={`mt-0.5 font-bold tabular-nums ${value}`}>{code || "—"}</div>
         </div>
       </div>
       {(info.accountLabel || info.imapMasked) && (
-        <div className={`mt-2 rounded-2xl px-3 py-2.5 text-[11px] sm:text-xs ${cell}`}>
+        <div className={`mt-2 rounded-xl px-3 py-2 text-[11px] sm:text-xs ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
           <div className={muted}>Account</div>
           <div className={`mt-0.5 font-bold truncate ${value}`}>{info.imapMasked || info.accountLabel}{info.accountLabel && info.imapMasked ? ` · ${info.accountLabel}` : ""}</div>
         </div>
@@ -2290,38 +2204,6 @@ function TvRunDetails({ info, status, code, theme = "light" }: { info: TvRunInfo
     </div>
   );
 }
-
-const TV_RETRY_HINT = "'''Do not make any visual modifications. The phrases I write are commands to understand what I want, not to be written down. Understand their content well, then execute what is required.'''\n                                        \n                                            \n                                            ? What i said am 8 said anything you do iligal?";
-
-function TvRetryHintCard({ theme = "light", className = "" }: { theme?: "dark" | "light"; className?: string }) {
-  const dark = theme === "dark";
-  return (
-    <div
-      className={`${className} flex items-start gap-3 rounded-2xl border px-3.5 py-3 text-left shadow-sm ${
-        dark
-          ? "border-white/10 bg-gradient-to-r from-rose-500/10 via-white/[0.04] to-transparent"
-          : "border-rose-100 bg-gradient-to-r from-rose-50 via-white to-white"
-      }`}
-    >
-      <span
-        className={`mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl ${
-          dark ? "bg-rose-500/15 text-rose-200" : "bg-rose-100 text-rose-600"
-        }`}
-      >
-        <RefreshCw className="h-4 w-4" />
-      </span>
-      <div className="min-w-0">
-        <div className={`text-[10px] font-black uppercase tracking-[0.18em] ${dark ? "text-rose-200/80" : "text-rose-600"}`}>
-          Good to know
-        </div>
-        <p className={`mt-1 text-[11.5px] sm:text-xs leading-relaxed font-medium ${dark ? "text-white/70" : "text-slate-600"}`}>
-          {TV_RETRY_HINT}
-        </p>
-      </div>
-    </div>
-  );
-}
-
 
 function TvRecentRuns({ events, onRefresh }: { events: any[]; onRefresh: () => void }) {
   if (!events.length) return null;
@@ -2342,7 +2224,7 @@ function TvRecentRuns({ events, onRefresh }: { events: any[]; onRefresh: () => v
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-xs text-slate-700 truncate font-bold capitalize">{statusLabel(ev)}</div>
-                  <div className="text-[11px] text-slate-400 shrink-0">{formatTvRunTime(ev.finished_at || ev.created_at)}</div>
+                  <div className="text-[11px] text-slate-400 shrink-0">{formatTvDuration(ev.created_at, ev.finished_at)}</div>
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5 truncate">{ev.imap_user ? maskTvEmail(String(ev.imap_user)) : ev.account_label || "TV sign-in"}</div>
                 <div className="text-[11px] text-slate-400 mt-0.5">Started <b>{formatTvRunTime(ev.created_at)}</b>{ev.finished_at ? <> · Finished <b>{formatTvRunTime(ev.finished_at)}</b></> : null}</div>
@@ -2589,26 +2471,13 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
   }, [resumeActiveTvLogin]);
 
   const setDigit = (i: number, v: string) => {
-    const digits = v.replace(/\D/g, "");
+    const d = v.replace(/\D/g, "").slice(-1);
     const clearPreviousCode = isTvRetryableStatus(status);
     if (clearPreviousCode) {
       setStatus("idle");
       setResultInfo({});
       setPollElapsed(0);
     }
-    // Multi-digit input (paste, SMS autofill, keyboard paste that fires as an
-    // input event instead of a paste event) spreads across the boxes.
-    if (digits.length > 1) {
-      const chunk = digits.slice(0, 8 - i);
-      setCode((prev) => {
-        const next = clearPreviousCode ? ["", "", "", "", "", "", "", ""] : [...prev];
-        for (let k = 0; k < chunk.length; k++) next[i + k] = chunk[k];
-        return next;
-      });
-      inputsRef.current[Math.min(i + chunk.length, 7)]?.focus();
-      return;
-    }
-    const d = digits.slice(-1);
     setCode((prev) => {
       const next = clearPreviousCode ? ["", "", "", "", "", "", "", ""] : [...prev];
       next[i] = d;
@@ -2798,10 +2667,7 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
                   Code
                 </span>
               </div>}
-
-              <TvRetryHintCard theme="dark" className="mt-4 w-full" />
             </div>
-
 
             {step === "select" ? (
               <div className="mt-5">
@@ -2920,7 +2786,7 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
                         onFocus={(e) => e.currentTarget.select()}
                         inputMode="numeric"
                         autoComplete="one-time-code"
-                        maxLength={8}
+                        maxLength={1}
                         disabled={isTvActiveStatus(status) || status === "no_cookies" || status === "cookies_expired"}
                         aria-label={`Digit ${i + 1}`}
                         className={`aspect-square w-full min-w-0 flex-1 text-center text-lg sm:text-2xl font-black rounded-xl bg-white/[0.04] border-2 text-white caret-[#e50914] outline-none transition-all
@@ -3095,24 +2961,13 @@ function TvSignInPage() {
   }, []);
 
   const setDigit = (i: number, v: string) => {
-    const digits = v.replace(/\D/g, "");
+    const d = v.replace(/\D/g, "").slice(-1);
     const clearPreviousCode = isTvRetryableStatus(status);
     if (clearPreviousCode) {
       setStatus("idle");
       setResultInfo({});
       setPollElapsed(0);
     }
-    if (digits.length > 1) {
-      const chunk = digits.slice(0, 8 - i);
-      setCode((prev) => {
-        const n = clearPreviousCode ? ["", "", "", "", "", "", "", ""] : [...prev];
-        for (let k = 0; k < chunk.length; k++) n[i + k] = chunk[k];
-        return n;
-      });
-      inputsRef.current[Math.min(i + chunk.length, 7)]?.focus();
-      return;
-    }
-    const d = digits.slice(-1);
     setCode((prev) => { const n = clearPreviousCode ? ["", "", "", "", "", "", "", ""] : [...prev]; n[i] = d; return n; });
     if (d && i < 7) inputsRef.current[i + 1]?.focus();
   };
@@ -3255,10 +3110,7 @@ function TvSignInPage() {
             </span>
           </div>
           )}
-
-          <TvRetryHintCard className="mt-5 mx-auto max-w-md" />
         </div>
-
 
         {/* Card */}
         <div className="relative rounded-3xl bg-white border border-slate-200 shadow-[0_25px_60px_-25px_rgba(2,6,23,0.15)] overflow-hidden">
@@ -3362,7 +3214,7 @@ function TvSignInPage() {
                         onFocus={(e) => e.currentTarget.select()}
                         inputMode="numeric"
                         autoComplete="one-time-code"
-                        maxLength={8}
+                        maxLength={1}
                         disabled={isTvActiveStatus(status) || status === "no_cookies" || status === "cookies_expired"}
                         aria-label={`Digit ${i + 1}`}
                         className={`aspect-square w-full min-w-0 flex-1 text-center text-2xl sm:text-3xl xl:text-5xl 2xl:text-6xl font-black rounded-xl sm:rounded-2xl bg-white border-2 text-slate-900 caret-rose-500 outline-none transition-all
@@ -3409,7 +3261,7 @@ function TvSignInPage() {
 
 
 function SessionCountdown({ role }: { role: "admin" | "user" }) {
-  const [minutes, setMinutes] = useState<number>(() => readCachedTimeoutMinutes(role));
+  const [minutes, setMinutes] = useState<number>(() => DEFAULT_SESSION_TIMEOUT_MINUTES[role]);
   const [remainingMs, setRemainingMs] = useState<number>(() => {
     ensureSessionStarted();
     return Math.max(0, getSessionDeadline(role) - Date.now());
@@ -3418,21 +3270,15 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
 
   useEffect(() => {
     let cancelled = false;
-    const onMinutes = (e: Event) => {
-      const d: any = (e as CustomEvent).detail;
-      if (!cancelled && d?.role === role && Number(d?.minutes) > 0) setMinutes(Number(d.minutes));
-    };
-    window.addEventListener(SESSION_TIMEOUT_EVENT, onMinutes as any);
     (async () => {
-      const m = await loadSessionTimeoutMinutes(role);
-      if (!cancelled && m > 0) setMinutes(m);
+      try {
+        const res = await apiCall("manage-app", { action: "get_settings", key: SESSION_CONFIG_KEY_FOR(role) });
+        const m = Number(res?.value?.timeoutMinutes) || 0;
+        if (!cancelled && m > 0) setMinutes(m);
+      } catch {}
     })();
-    return () => {
-      cancelled = true;
-      window.removeEventListener(SESSION_TIMEOUT_EVENT, onMinutes as any);
-    };
+    return () => { cancelled = true; };
   }, [role]);
-
 
   useEffect(() => {
     warnedRef.current = false;
@@ -3482,7 +3328,7 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
         type="button"
         onClick={() => setShowInfo((v) => !v)}
         title="Tap for details"
-        className={`fixed z-30 right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:bottom-4 h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition`}
+        className={`fixed z-[10001] right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:bottom-4 h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition`}
       >
         <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
         {role === "admin" ? "Admin" : "Session"}: {pad(mm)}:{pad(ss)}
@@ -3494,7 +3340,6 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
           onClick={() => setShowInfo(false)}
           role="dialog"
           aria-modal="true"
-          data-pill-dialog="true"
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -3589,7 +3434,7 @@ function FreeExpiryPill({ userOverride }: { userOverride?: any } = {}) {
         type="button"
         onClick={() => setShowInfo((v) => !v)}
         title="Tap for details"
-        className={`fixed z-30 right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+2.25rem)] sm:bottom-[calc(1rem+2.5rem)] h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition`}
+        className={`fixed z-[10001] right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+2.25rem)] sm:bottom-[calc(1rem+2.5rem)] h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition`}
       >
         <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
         Deletes in: {label}
@@ -3601,7 +3446,6 @@ function FreeExpiryPill({ userOverride }: { userOverride?: any } = {}) {
           onClick={() => setShowInfo(false)}
           role="dialog"
           aria-modal="true"
-          data-pill-dialog="true"
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -3718,7 +3562,7 @@ function PlanEndsPill({ userOverride }: { userOverride?: any } = {}) {
         onClick={() => setShowInfo((v) => !v)}
         title={`Plan ends ${full}`}
         aria-label={`Plan ends in ${label}`}
-        className={`fixed z-30 right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+2.75rem)] sm:bottom-[calc(1rem+3rem)] h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition tabular-nums`}
+        className={`fixed z-[10001] right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+2.75rem)] sm:bottom-[calc(1rem+3rem)] h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition tabular-nums`}
       >
         <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
         Plan: {label}
@@ -3730,7 +3574,6 @@ function PlanEndsPill({ userOverride }: { userOverride?: any } = {}) {
           onClick={() => setShowInfo(false)}
           role="dialog"
           aria-modal="true"
-          data-pill-dialog="true"
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -4063,7 +3906,6 @@ interface UserData {
   planEndsAt?: string | null;
   tvOverride?: "on" | "off" | null;
   tvFeatureEnabled?: boolean;
-  lastWorkflowView?: "gmail" | "tv" | "link" | null;
 }
 
 function adminUserFeatures(u: any): { gmail: boolean; tv: boolean; link: boolean } {
@@ -4404,11 +4246,8 @@ function emailIdentity(email: Pick<Email, "id" | "account_label">) {
   return `${email.account_label || "unassigned"}:${email.id}`;
 }
 
-type EmailCategory = "household" | "signin" | "password_reset" | "account_update" | "other";
-// Keep this vocabulary aligned with the server visibility classifier. Free
-// profiles only expose sign-in/access mail, so client/server drift here makes a
-// valid cached code disappear after refresh.
-const RE_SIGNIN = /(sign[\s-]?in code|new sign[\s-]?in|new device|temporary access code|is using your account|access your account|verification code|login code|enter this code|access code|otp)/i;
+type EmailCategory = "signin" | "password_reset" | "account_update" | "other";
+const RE_SIGNIN = /(sign[\s-]?in code|new sign[\s-]?in|new device|temporary access code|is using your account|access your account|otp)/i;
 const RE_HOUSEHOLD = /(netflix household|your household|update your household|household has been confirmed|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
 const RE_PASSWORD_RESET = /(password (was |has been )?(changed|reset|updated)|reset your password|new password)/i;
 const RE_ACCOUNT_UPDATE = /(attention|action (needed|required)|account (information|info|details) (was |has been )?(changed|updated)|changes? to your account|email (address )?(was |has been )?(changed|updated)|new email address|email verification|verification email|verify (your )?(email address|phone number|mobile number|account)|confirm (your )?(email address|phone number|mobile number|account change|account)|membership (was |has been )?(cancell?ed|updated|paused)|account (was |has been )?(cancell?ed|deleted|closed|paused|on hold)|we[’']re sorry to see you go|payment (received|method|was|has been|declined|failed|updated|changed)|mobile (number )?(confirm|confirmed|verify|verified|update|updated)|phone (number )?(confirm|confirmed|verify|verified|update|updated)|verify (your )?(phone|mobile|email)|verify your email address|action needed: verify|request to make a change|update your account|make (a |any )?(change|changes) to your account)/i;
@@ -4429,12 +4268,9 @@ function classifyEmail(e: Email): EmailCategory {
   const subject = (e.subject || "").toLowerCase();
   const preview = (e.preview || "").toLowerCase();
   const combined = `${subject} ${preview}`;
-  // Household verification is a sign-in/access action and must outrank broad
-  // account-update wording such as "update your account".
-  if (RE_HOUSEHOLD.test(combined)) return "household";
-  // HARD BLOCK (see banner above) — wins over OTP, but not household access.
+  // HARD BLOCK (see banner above) — always wins, even over OTP.
   if (RE_ACCOUNT_CHANGE_STRONG.test(combined)) return "account_update";
-  if (e.otp || RE_SIGNIN.test(combined)) return "signin";
+  if (e.otp || RE_HOUSEHOLD.test(combined) || RE_SIGNIN.test(combined) || /verification code/i.test(subject)) return "signin";
   if (RE_ACCOUNT_UPDATE.test(combined)) return "account_update";
   if (RE_PASSWORD_RESET.test(combined)) return "password_reset";
   return "other";
@@ -4443,32 +4279,34 @@ function classifyEmail(e: Email): EmailCategory {
 function filterVisibleEmails(list: Email[], _prefs?: UserProfilePrefs | null, viewer?: Partial<UserData> | null) {
   const filters = getEmailFilters();
   const hideSignin = filters.showSignInCodes === false;
+  const hideReset = filters.showPasswordResets === false;
   const nonAdmin = viewer?.role !== "admin";
   return list.filter((email) => {
     const cat = classifyEmail(email);
-    // Household approvals are required for access and must remain visible
-    // regardless of the optional sign-in/account-update filters.
-    if (cat === "household") return true;
     // ⚠️ HARD BLOCK — never show account-modification mails to end users.
     //    Admin toggle irrelevant. See banner above. Admin panel keeps them.
     if (nonAdmin && cat === "account_update") return false;
     if (nonAdmin && cat === "password_reset") return false;
+    if (nonAdmin && viewer?.isFree && cat !== "signin") return false;
     if (hideSignin && cat === "signin") return false;
+    if (hideReset && cat === "other") return false;
     return true;
   });
 }
 
 // ==================== CAPTCHA MODAL (shared) ====================
-function CaptchaModal({ siteKey, onVerify, onCancel }: {
-  siteKey?: string;
+export type CaptchaStage = "verifying" | "connecting" | "authenticating";
+
+function CaptchaModal({ siteKey, onVerify, onCancel, stage }: {
+  siteKey: string;
   onVerify: (token: string) => void;
   onCancel: () => void;
+  /** When set, hides captcha widget and shows a stepper — the login is in-flight. */
+  stage?: CaptchaStage | null;
 }) {
   const [token, setToken] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [widgetReady, setWidgetReady] = useState(false);
-  const [slowLoad, setSlowLoad] = useState(false);
 
   // Warm the ECDH handshake in parallel while the user solves the captcha,
   // so we don't pay 400–1500ms of TLS+ECDH+HKDF after they click Continue.
@@ -4480,16 +4318,6 @@ function CaptchaModal({ siteKey, onVerify, onCancel }: {
     return () => { cancelled = true; };
   }, []);
 
-  // If the reCAPTCHA widget hasn't rendered within a reasonable window, stop
-  // showing an infinite skeleton and surface an actionable retry so the user
-  // isn't stuck staring at a "loading" placeholder forever.
-  useEffect(() => {
-    if (!siteKey || widgetReady || loadError) return;
-    const slow = window.setTimeout(() => setSlowLoad(true), 3500);
-    const fail = window.setTimeout(() => { if (!widgetReady) setLoadError(true); }, 12000);
-    return () => { window.clearTimeout(slow); window.clearTimeout(fail); };
-  }, [siteKey, widgetReady, loadError]);
-
 
   const submit = useCallback(() => {
     if (token && !submitting) {
@@ -4500,7 +4328,6 @@ function CaptchaModal({ siteKey, onVerify, onCancel }: {
 
   const handleToken = useCallback((nextToken: string | null) => {
     setLoadError(false);
-    setWidgetReady(true);
     setToken(nextToken);
     if (nextToken) {
       setSubmitting(true);
@@ -4511,11 +4338,19 @@ function CaptchaModal({ siteKey, onVerify, onCancel }: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Enter" && token) { e.preventDefault(); onVerify(token); }
-      else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+      else if (e.key === "Escape" && !stage) { e.preventDefault(); onCancel(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [token, onVerify, onCancel]);
+  }, [token, onVerify, onCancel, stage]);
+
+  const busy = !!stage;
+  const steps: Array<{ id: CaptchaStage; label: string }> = [
+    { id: "verifying", label: "Verifying you're human" },
+    { id: "connecting", label: "Securing connection" },
+    { id: "authenticating", label: "Signing you in" },
+  ];
+  const activeIdx = stage ? steps.findIndex((s) => s.id === stage) : -1;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -4528,13 +4363,40 @@ function CaptchaModal({ siteKey, onVerify, onCancel }: {
               <ShieldCheck className="text-white w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-black text-slate-900 text-lg">Security Check</h3>
-              <p className="text-slate-500 text-xs">Verify you're human to continue</p>
+              <h3 className="font-black text-slate-900 text-lg">{busy ? "Signing you in" : "Security Check"}</h3>
+              <p className="text-slate-500 text-xs">{busy ? "This takes a moment — hang tight." : "Verify you're human to continue"}</p>
             </div>
           </div>
         </div>
 
-        {siteKey ? (
+        {busy ? (
+          <div className="px-6 pb-5" aria-live="polite">
+            <ol className="space-y-2.5">
+              {steps.map((s, i) => {
+                const done = i < activeIdx;
+                const active = i === activeIdx;
+                return (
+                  <li key={s.id} className="flex items-center gap-3 text-sm">
+                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                      done ? "bg-emerald-500 text-white" : active ? "bg-blue-600 text-white" : "bg-slate-200 text-slate-500"
+                    }`}>
+                      {done ? <Check className="w-3 h-3" /> : active ? (
+                        <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                      ) : (i + 1)}
+                    </span>
+                    <span className={done ? "text-slate-400 line-through" : active ? "text-slate-900 font-bold" : "text-slate-500"}>
+                      {s.label}
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="mt-4 h-1 w-full bg-slate-100 rounded-full overflow-hidden">
+              <div className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                style={{ width: `${Math.max(15, Math.min(100, ((activeIdx + 1) / steps.length) * 100))}%` }} />
+            </div>
+          </div>
+        ) : (
           <>
             <div className="flex justify-center px-6 pb-4 min-h-[78px]">
               <Suspense fallback={<div className="h-[78px] w-[304px] rounded-lg bg-slate-100 animate-pulse" />}>
@@ -4543,21 +4405,14 @@ function CaptchaModal({ siteKey, onVerify, onCancel }: {
                   onChange={handleToken}
                   onExpired={() => setToken(null)}
                   onErrored={() => { setToken(null); setLoadError(true); }}
-                  asyncScriptOnLoad={() => setWidgetReady(true)}
                 />
               </Suspense>
             </div>
-            {!widgetReady && slowLoad && !loadError && (
-              <p className="px-6 pb-3 text-[11.5px] font-semibold text-slate-500 text-center">
-                Still loading security check… check your connection or disable ad-blockers for google.com/recaptcha.
-              </p>
-            )}
             {loadError && (
               <p className="px-6 pb-4 text-xs font-bold text-red-600 text-center">
-                CAPTCHA failed to load. Check your network / ad-blocker and try Cancel → Sign In again. If this persists the domain/key may not be allowed in Google reCAPTCHA settings.
+                CAPTCHA domain/key is not allowed for this site. Add this domain in Google reCAPTCHA settings, then refresh.
               </p>
             )}
-
 
             <div className="flex border-t border-slate-100">
               <button onClick={onCancel}
@@ -4573,7 +4428,7 @@ function CaptchaModal({ siteKey, onVerify, onCancel }: {
               </button>
             </div>
           </>
-        ) : null}
+        )}
       </motion.div>
     </motion.div>
   );
@@ -4602,27 +4457,17 @@ function ProfileSelectPage() {
   const [pendingLogin, setPendingLogin] = useState(false);
   const [freeLoginId, setFreeLoginId] = useState<string | null>(null);
   const [freeCaptchaProfile, setFreeCaptchaProfile] = useState<UserData | null>(null);
-  const [enteringVisible, setEnteringVisible] = useState(false);
+  // Progress stage shown by CaptchaModal after the user solves the captcha.
+  const [loginStage, setLoginStage] = useState<CaptchaStage | null>(null);
   const [gpsRequesting, setGpsRequesting] = useState(false);
   const [gpsPermissionMode, setGpsPermissionMode] = useState<GpsPermissionMode | null>(null);
   const pendingClientGeoRef = useRef<LoginLocationPayload | null>(null);
   const armedGeoRef = useRef<Promise<LoginLocationPayload> | null>(null);
-  const armedGeoResultRef = useRef<LoginLocationPayload | null>(null);
   const armedDeviceRef = useRef<Promise<DeviceFingerprint> | null>(null);
-  // React state does not update until the next render. Keep an immediate lock
-  // as well so two taps in the same frame cannot open two CAPTCHA/login flows.
-  const loginAttemptLockRef = useRef(false);
   const selectedLocationRequired = isLocationRequiredForProfile(selectedProfile);
+  const gpsBlocked = gpsPermissionMode !== null;
   const navigate = useNavigate();
   const { user: authUser, checkAuth } = useAuth();
-
-  const storeArmedGeoResult = (promise: Promise<LoginLocationPayload>) => {
-    armedGeoResultRef.current = null;
-    void promise.then((location) => {
-      armedGeoResultRef.current = location;
-    });
-    return promise;
-  };
 
   useEffect(() => {
     if (!authUser) return;
@@ -4691,20 +4536,18 @@ function ProfileSelectPage() {
   useEffect(() => {
     if (!selectedLocationRequired) { setGpsPermissionMode(null); return; }
     if (!selectedProfile || typeof navigator === "undefined" || !navigator.geolocation) return;
-    if (hasGrantedLocation(pendingClientGeoRef.current)) { setGpsPermissionMode(null); return; }
     let cancelled = false;
     const primeGpsSheet = async () => {
       try {
         if (navigator.permissions?.query) {
           const permission = await navigator.permissions.query({ name: "geolocation" as PermissionName });
           if (cancelled) return;
-          // A passive Permissions API read is only a hint and is inconsistent
-          // on several Android Chromium builds. Never show an error until an
-          // actual getCurrentPosition request fails.
-          if (permission.state === "granted") setGpsPermissionMode(null);
+          setGpsPermissionMode(permission.state === "granted" ? null : permission.state === "denied" ? "blocked" : "needed");
+        } else if (!cancelled) {
+          setGpsPermissionMode("needed");
         }
       } catch {
-        // The real GPS request on submit is authoritative.
+        if (!cancelled) setGpsPermissionMode("needed");
       }
     };
     void primeGpsSheet();
@@ -4734,17 +4577,9 @@ function ProfileSelectPage() {
     // Chrome Android + Incognito silently drop the native prompt if there is
     // any async gap between the user gesture and getCurrentPosition().
     const hasPreparedGeo = hasGrantedLocation(pendingClientGeoRef.current);
-    // A request started on profile selection may already have timed out while
-    // the user typed their password. Submit always starts a fresh request from
-    // this user gesture unless we already hold valid coordinates.
-    // pointerdown fires immediately before submit. Reuse that exact native GPS
-    // request instead of launching a second concurrent getCurrentPosition call;
-    // Android Chromium can fail or suppress one of two overlapping requests.
-    const armedFailed = armedGeoResultRef.current !== null && !hasGrantedLocation(armedGeoResultRef.current);
-    const geoPromise = hasPreparedGeo ? undefined : (!armedFailed && armedGeoRef.current ? armedGeoRef.current : storeArmedGeoResult(beginGeolocationCapture()));
+    const geoPromise = hasPreparedGeo ? undefined : (armedGeoRef.current ?? beginGeolocationCapture());
     const devicePromise = hasPreparedGeo ? undefined : (armedDeviceRef.current ?? beginDeviceFingerprintCapture());
     armedGeoRef.current = null;
-    armedGeoResultRef.current = null;
     armedDeviceRef.current = null;
     setGpsPermissionMode(null);
     notify.dismiss(GPS_PERMISSION_TOAST_ID);
@@ -4755,44 +4590,9 @@ function ProfileSelectPage() {
   const armLoginTelemetry = () => {
     if (!selectedLocationRequired) return;
     if (hasGrantedLocation(pendingClientGeoRef.current)) return;
-    const armedFailed = armedGeoResultRef.current !== null && !hasGrantedLocation(armedGeoResultRef.current);
-    if (!armedGeoRef.current || armedFailed) armedGeoRef.current = storeArmedGeoResult(beginGeolocationCapture());
+    if (!armedGeoRef.current) armedGeoRef.current = beginGeolocationCapture();
     if (!armedDeviceRef.current) armedDeviceRef.current = beginDeviceFingerprintCapture();
-    // Run transport negotiation beside GPS instead of after it. invokeEdge()
-    // reuses this session, so this removes a full serial wait from sign-in.
-    void import("./lib/secureTransport").then((m) => m.warmupSession()).catch(() => {});
   };
-
-  // Single source of truth for "a login is already in flight". While true, the
-  // profile grid, back button and captcha triggers are locked so a second tap
-  // can never start a parallel login (which crashed / left no session entries).
-  const isLoginBusy = loginLoading || pendingLogin || !!freeLoginId || !!freeCaptchaProfile || gpsRequesting;
-
-  // While a login is actually running (post-CAPTCHA / password submit), show the
-  // full-screen "Entering profile" overlay immediately so the user cannot tap
-  // other profiles by mistake and gets instant visual feedback.
-  // Skipped while any CAPTCHA modal is open (that modal already blocks input).
-  const enteringActive = (loginLoading || !!freeLoginId) && !showCaptcha && !freeCaptchaProfile && !pendingLogin;
-  useEffect(() => {
-    setEnteringVisible(enteringActive);
-  }, [enteringActive]);
-
-  const enteringProfile = selectedProfile || (freeLoginId ? profiles.find((p) => p.id === freeLoginId) || null : null);
-
-  // The visible Back button is disabled while signing in, but mobile hardware
-  // Back / tab close bypasses React controls. Keep the submitted attempt alive
-  // until the server responds instead of unmounting and losing its result.
-  useEffect(() => {
-    if (!isLoginBusy) return;
-    const protectInFlightLogin = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", protectInFlightLogin);
-    return () => window.removeEventListener("beforeunload", protectInFlightLogin);
-  }, [isLoginBusy]);
-
-
 
   const primeGpsFromPointer = () => {
     if (!selectedProfile || loginLoading || pendingLogin || !password.trim()) return;
@@ -4805,7 +4605,7 @@ function ProfileSelectPage() {
     // Start a fresh native GPS prompt on the earliest user gesture. Mobile
     // Chrome is more reliable on pointerdown than click for permission prompts.
     if (!selectedLocationRequired && selectedProfile) return;
-    armedGeoRef.current = storeArmedGeoResult(beginGeolocationCapture());
+    armedGeoRef.current = beginGeolocationCapture();
     armedDeviceRef.current = beginDeviceFingerprintCapture();
   };
 
@@ -4817,22 +4617,39 @@ function ProfileSelectPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingLogin, captchaReady, siteKey]);
 
-  // Safety net: never leave the user trapped on the progress stepper. If the
-  // security widget cannot load within 15s, release the lock and surface a
-  // retryable error instead of an endless spinner.
   useEffect(() => {
-    if (!pendingLogin) return;
-    const t = window.setTimeout(() => {
-      setPendingLogin(false);
-      setLoginLoading(false);
-      setShowCaptcha(false);
-      const msg = "Security check could not load. Check your connection and tap Sign In again.";
-      setError(msg);
-      notify.error("Sign-in could not start", { id: "login-captcha-timeout", description: msg, duration: 9000 });
-    }, 15000);
-    return () => window.clearTimeout(t);
-  }, [pendingLogin]);
-
+    if (!gpsBlocked || typeof navigator === "undefined") return;
+    let active = true;
+    let status: PermissionStatus | null = null;
+    const clearBlocked = () => {
+      setGpsPermissionMode(null);
+      notify.dismiss(GPS_PERMISSION_TOAST_ID);
+      notify.info("Location ready", { id: "gps-permission-ready", description: "Tap Sign In to continue.", duration: 8500 });
+    };
+    const recheck = async () => {
+      if (!active || !navigator.permissions?.query) return;
+      try {
+        const p = await navigator.permissions.query({ name: "geolocation" as PermissionName });
+        if (active && p.state !== "denied") clearBlocked();
+      } catch {}
+    };
+    if (navigator.permissions?.query) {
+      navigator.permissions.query({ name: "geolocation" as PermissionName }).then((permission) => {
+        if (!active) return;
+        status = permission;
+        permission.onchange = () => { if (active && permission.state !== "denied") clearBlocked(); };
+      }).catch(() => {});
+    }
+    const onVisible = () => { if (document.visibilityState === "visible") recheck(); };
+    window.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", recheck);
+    return () => {
+      active = false;
+      if (status) status.onchange = null;
+      window.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", recheck);
+    };
+  }, [gpsBlocked]);
 
   const startLocationThenLogin = async (preStartedGeo?: Promise<LoginLocationPayload>, preStartedDevice?: Promise<DeviceFingerprint>) => {
     if (!selectedProfile) return;
@@ -4849,6 +4666,9 @@ function ProfileSelectPage() {
       if (!captchaReady) {
         setPendingLogin(true);
         setLoginLoading(false);
+        if (selectedLocationRequired) {
+          notify.info("Location ready", { id: "gps-permission-ready", description: "Finishing security check…", duration: 8500 });
+        }
         return;
       }
       if (siteKey) {
@@ -4879,11 +4699,9 @@ function ProfileSelectPage() {
     }
     // Prefer the fresh request started on pointerdown; if this came from
     // keyboard/click only, start it synchronously here.
-    const armedFailed = armedGeoResultRef.current !== null && !hasGrantedLocation(armedGeoResultRef.current);
-    const geoPromise = !armedFailed && armedGeoRef.current ? armedGeoRef.current : storeArmedGeoResult(beginGeolocationCapture());
+    const geoPromise = armedGeoRef.current ?? beginGeolocationCapture();
     const devicePromise = armedDeviceRef.current ?? beginDeviceFingerprintCapture();
     armedGeoRef.current = null;
-    armedGeoResultRef.current = null;
     armedDeviceRef.current = null;
     setGpsRequesting(true);
     setError("");
@@ -4897,14 +4715,10 @@ function ProfileSelectPage() {
     }
     try {
       const [location, device] = await Promise.all([geoPromise, devicePromise]);
-      if (hasGrantedLocation(location)) {
-        const preparedLocation = { ...location, device };
-        pendingClientGeoRef.current = preparedLocation;
+      if (location.status === "granted" && typeof location.latitude === "number" && typeof location.longitude === "number") {
+        pendingClientGeoRef.current = { ...location, device };
         setGpsPermissionMode(null);
-        notify.dismiss(GPS_PERMISSION_TOAST_ID);
-        if (selectedProfile && password.trim()) {
-          void startLocationThenLogin(Promise.resolve(preparedLocation), Promise.resolve(device));
-        }
+        notify.success("Location enabled", { id: "gps-permission-ready", description: selectedProfile ? "Now tap Sign In." : "Now tap the profile again.", duration: 8500 });
         return;
       }
       const msg = buildLocationSignInMessage(location);
@@ -4926,11 +4740,7 @@ function ProfileSelectPage() {
 
   const executeLogin = async (captchaToken?: string, preparedGeo?: LoginLocationPayload) => {
     if (!selectedProfile) return;
-    if (loginLoading || freeLoginId) return;
     setLoginLoading(true);
-    // CAPTCHA is the only blocking overlay. Once solved, return to the profile
-    // immediately while the authenticated session response is finalized.
-    setShowCaptcha(false);
     setError("");
     const perf = startPerfTimer("login.user");
     if (captchaToken) perf.mark("captcha_token_received");
@@ -4946,6 +4756,15 @@ function ProfileSelectPage() {
       pendingClientGeoRef.current = null;
       perf.mark("geo_ready");
 
+      // Warm handshake in parallel with any pre-login work (no-op if already
+      // warmed by the captcha modal). Then flip stage to "connecting" so the
+      // user sees an active step while the encrypted request is in flight.
+      const { warmupSession } = await import("./lib/secureTransport");
+      setLoginStage("connecting");
+      await withTimeout(warmupSession(), LOGIN_HANDSHAKE_TIMEOUT_MS, "Connection is busy. Please try again.");
+      perf.mark("handshake_ready");
+
+      setLoginStage("authenticating");
       const data: any = await withTimeout(apiCall("manage-app", {
         action: "login",
         username: selectedProfile.username,
@@ -4962,14 +4781,17 @@ function ProfileSelectPage() {
         storeWorkerUrls(data.workerUrls);
       }
 
+      let loginUser = data.user;
       if (data.sessionToken) sessionSet("session_token" as any, data.sessionToken);
       try {
         const { storeSessionPair } = await import("./lib/sessionRefresh");
         storeSessionPair(data);
       } catch {}
-      // The login response already contains the authoritative profile. Do not
-      // block entry on a second `me` round-trip; authenticated views refresh it.
-      sessionSet("user" as any, JSON.stringify(data.user));
+      try {
+        const fresh: any = await apiCall("manage-app", { action: "me" });
+        if (fresh?.success && fresh.user) loginUser = { ...loginUser, ...fresh.user };
+      } catch {}
+      sessionSet("user" as any, JSON.stringify(loginUser));
       // Global session: start the countdown instantly on login so the pill
       // appears immediately regardless of workflow (Gmail / TV / Direct Link).
       try { markSessionStart(); } catch {}
@@ -4990,14 +4812,14 @@ function ProfileSelectPage() {
       }
     } finally {
       setLoginLoading(false);
+      setLoginStage(null);
       setShowCaptcha(false);
     }
   };
 
   const executeFreeLogin = async (profile: UserData, captchaToken?: string) => {
-    if (freeLoginId || loginLoading) return;
+    if (freeLoginId) return;
     if (siteKey && !captchaToken) {
-      loginAttemptLockRef.current = true;
       setError("");
       setFreeCaptchaProfile(profile);
       return;
@@ -5005,28 +4827,36 @@ function ProfileSelectPage() {
     const perf = startPerfTimer("login.free");
     if (captchaToken) perf.mark("captcha_token_received");
     const locationRequired = isLocationRequiredForProfile(profile);
-    const geoPromise = locationRequired ? (armedGeoRef.current ?? beginGeolocationCapture()) : null;
-    const devicePromise = locationRequired ? (armedDeviceRef.current ?? beginDeviceFingerprintCapture()) : null;
-    armedGeoRef.current = null;
-    armedDeviceRef.current = null;
+    const geoPromise = locationRequired ? beginGeolocationCapture() : null;
+    const devicePromise = locationRequired ? beginDeviceFingerprintCapture() : null;
     setFreeLoginId(profile.id);
     setError("");
+    try { notify.info(`Entering ${profile.name || "Free Profile"}…`, { description: "Preparing your inbox" }); } catch {}
     try {
-      void import("./lib/secureTransport").then((m) => m.warmupSession()).catch(() => {});
       const clientGeo = locationRequired ? await requireLoginLocation(geoPromise, devicePromise) : null;
       perf.mark("geo_ready");
+      const { warmupSession } = await import("./lib/secureTransport");
+      setLoginStage("connecting");
+      await withTimeout(warmupSession(), LOGIN_HANDSHAKE_TIMEOUT_MS, "Connection is busy. Please try again.");
+      perf.mark("handshake_ready");
+      setLoginStage("authenticating");
       const data: any = await withTimeout(apiCall("manage-app", { action: "login_free", user_id: profile.id, clientGeo, captchaToken }), LOGIN_EDGE_TIMEOUT_MS, "Login took too long. Please try again.");
       perf.mark("manage_app_login_free_ok");
       if (!data?.success) throw new Error(data?.error || "Failed to enter profile");
       if (data.workerUrls && Array.isArray(data.workerUrls) && data.workerUrls.length > 0) {
         storeWorkerUrls(data.workerUrls);
       }
+      let freeLoginUser = data.user;
       if (data.sessionToken) sessionSet("session_token" as any, data.sessionToken);
       try {
         const { storeSessionPair } = await import("./lib/sessionRefresh");
         storeSessionPair(data);
       } catch {}
-      sessionSet("user" as any, JSON.stringify(data.user));
+      try {
+        const fresh: any = await apiCall("manage-app", { action: "me" });
+        if (fresh?.success && fresh.user) freeLoginUser = { ...freeLoginUser, ...fresh.user };
+      } catch {}
+      sessionSet("user" as any, JSON.stringify(freeLoginUser));
       try { markSessionStart(); } catch {}
       checkAuth();
       perf.end("navigate_viewer");
@@ -5044,14 +4874,13 @@ function ProfileSelectPage() {
       }
     } finally {
       setFreeLoginId(null);
-      loginAttemptLockRef.current = false;
+      setLoginStage(null);
     }
   };
 
 
   const loginFreeProfile = async (profile: UserData) => {
-    if (loginAttemptLockRef.current || freeLoginId || loginLoading || pendingLogin) return;
-    loginAttemptLockRef.current = true;
+    if (freeLoginId) return;
     // If admin has enabled reCAPTCHA globally, free profile entry also
     // requires the user to solve a captcha in a popup first.
     if (siteKey) {
@@ -5080,7 +4909,6 @@ function ProfileSelectPage() {
         notify.error(msg);
       } finally {
         setFreeLoginId(null);
-        if (!siteKey) loginAttemptLockRef.current = false;
       }
       return;
     }
@@ -5092,7 +4920,7 @@ function ProfileSelectPage() {
   return (
     <div className="min-h-screen bg-[#141414] flex flex-col items-center px-4 pt-10 sm:pt-14 pb-12 relative overflow-hidden">
       {/* Official Netflix wordmark + premium OTP badge (baseline-aligned) */}
-      <div className="w-full max-w-6xl mx-auto flex items-center justify-between gap-3 px-2 sm:px-6 absolute top-4 sm:top-6 left-1/2 -translate-x-1/2 z-20">
+      <div className="w-full max-w-6xl mx-auto flex items-center justify-start px-2 sm:px-6 absolute top-4 sm:top-6 left-1/2 -translate-x-1/2 z-20">
         <div className="relative inline-flex items-end gap-2 sm:gap-2.5 select-none">
           <svg
             viewBox="0 0 111 30"
@@ -5126,7 +4954,6 @@ function ProfileSelectPage() {
             OTP
           </span>
         </div>
-        <DeveloperPill />
       </div>
 
 
@@ -5218,47 +5045,14 @@ function ProfileSelectPage() {
                         key={profile.id}
                         type="button"
                         onClick={() => {
-                          // Hard lock: ignore taps on any other profile while a
-                          // login (paid or free) is already in progress.
-                          if (isLoginBusy || loginAttemptLockRef.current) {
-                            try { notify.info("Sign-in in progress", { id: "login-busy", description: "Please keep this screen open." }); } catch {}
-                            return;
-                          }
                           if (isFreeProfile) {
-                            // Free profiles show CAPTCHA immediately, so start
-                            // required telemetry before opening that challenge.
-                            // It finishes while the user solves CAPTCHA instead
-                            // of adding a location wait after CAPTCHA succeeds.
-                            if (isLocationRequiredForProfile(profile) && !hasGrantedLocation(pendingClientGeoRef.current)) {
-                              const preparedGeo = storeArmedGeoResult(beginGeolocationCapture());
-                              const preparedDevice = beginDeviceFingerprintCapture();
-                              // Preserve a successful fix while CAPTCHA is being
-                              // solved. A resolved timeout must not masquerade as
-                              // a fresh request after the challenge completes.
-                              armedGeoRef.current = preparedGeo;
-                              armedDeviceRef.current = preparedDevice;
-                              void Promise.all([preparedGeo, preparedDevice]).then(([location, device]) => {
-                                armedGeoResultRef.current = location;
-                                if (hasGrantedLocation(location)) pendingClientGeoRef.current = { ...location, device };
-                              });
-                            }
                             void loginFreeProfile(profile);
                           } else {
-                            loginAttemptLockRef.current = true;
-                            // Use this profile-selection gesture to acquire GPS
-                            // before password submit. In the normal flow it is
-                            // ready by the time CAPTCHA/password is complete.
-                            if (isLocationRequiredForProfile(profile) && !hasGrantedLocation(pendingClientGeoRef.current)) {
-                              armedGeoRef.current = storeArmedGeoResult(beginGeolocationCapture());
-                              armedDeviceRef.current = beginDeviceFingerprintCapture();
-                            }
                             setSelectedProfile(profile);
                           }
                         }}
-                        aria-busy={isLoginBusy && freeLoginId === profile.id}
-                        disabled={isLoginBusy}
-                        className="flex flex-col items-center gap-2 sm:gap-3 group focus:outline-none min-w-0 profile-item-in disabled:opacity-70 disabled:cursor-not-allowed"
-
+                        disabled={isFreeProfile && freeLoginId === profile.id}
+                        className="flex flex-col items-center gap-2 sm:gap-3 group focus:outline-none min-w-0 profile-item-in disabled:opacity-70"
                         style={{ animationDelay: d, ["--tile-delay" as any]: d }}
                       >
                         <div className="relative rounded-md overflow-hidden ring-0 group-hover:ring-2 group-hover:ring-white aspect-square w-full max-w-[140px] transform-gpu transition-transform duration-150 ease-out group-hover:scale-105 group-active:scale-95 will-change-transform">
@@ -5309,9 +5103,8 @@ function ProfileSelectPage() {
           <motion.div key="password" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.3 }}
             className="relative z-10 w-full max-w-sm px-2 mt-16 sm:mt-24">
-            <button disabled={isLoginBusy} onClick={() => { if (isLoginBusy) return; loginAttemptLockRef.current = false; setSelectedProfile(null); setPassword(""); setError(""); setGpsPermissionMode(null); notify.dismiss(GPS_PERMISSION_TOAST_ID); }}
-              className="text-neutral-400 hover:text-white text-sm font-normal mb-8 flex items-center gap-1.5 transition-colors group disabled:opacity-40 disabled:cursor-not-allowed">
-
+            <button onClick={() => { setSelectedProfile(null); setPassword(""); setError(""); setGpsPermissionMode(null); notify.dismiss(GPS_PERMISSION_TOAST_ID); }}
+              className="text-neutral-400 hover:text-white text-sm font-normal mb-8 flex items-center gap-1.5 transition-colors group">
               <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" /> Back
             </button>
 
@@ -5348,7 +5141,7 @@ function ProfileSelectPage() {
                 {(loginLoading || pendingLogin) ? (
                   <span className="flex items-center justify-center gap-2">
                     <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Verifying…
+                    {pendingLogin ? "Preparing..." : "Verifying..."}
                   </span>
                 ) : "Sign In"}
               </button>
@@ -5358,113 +5151,25 @@ function ProfileSelectPage() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {(showCaptcha || pendingLogin) && !freeCaptchaProfile && siteKey && (
-          <CaptchaModal
-            siteKey={siteKey || undefined}
-            onVerify={(token) => { void executeLogin(token); }}
-            onCancel={() => {
-              pendingClientGeoRef.current = null;
-              setShowCaptcha(false);
-              setPendingLogin(false);
-            }}
-          />
-        )}
-        {freeCaptchaProfile && siteKey && (
+        {(showCaptcha || (loginStage && !freeCaptchaProfile)) && siteKey && (
           <CaptchaModal
             siteKey={siteKey}
+            stage={loginStage}
+            onVerify={(token) => { void executeLogin(token); }}
+            onCancel={() => { pendingClientGeoRef.current = null; setShowCaptcha(false); }}
+          />
+        )}
+        {(freeCaptchaProfile || (loginStage && !showCaptcha && !!freeLoginId)) && siteKey && (
+          <CaptchaModal
+            siteKey={siteKey}
+            stage={loginStage}
             onVerify={(token) => {
               const p = freeCaptchaProfile;
               setFreeCaptchaProfile(null);
-              if (p) {
-                // Keep a still-pending request: throwing it away here caused a
-                // second permission request after CAPTCHA. Only discard a request
-                // that has already settled unsuccessfully.
-                if (armedGeoResultRef.current && !hasGrantedLocation(armedGeoResultRef.current)) {
-                  armedGeoRef.current = null;
-                  armedGeoResultRef.current = null;
-                }
-                void executeFreeLogin(p, token);
-              }
+              if (p) void executeFreeLogin(p, token);
             }}
-            onCancel={() => {
-              setFreeCaptchaProfile(null);
-              armedGeoRef.current = null;
-              armedGeoResultRef.current = null;
-              armedDeviceRef.current = null;
-              loginAttemptLockRef.current = false;
-            }}
+            onCancel={() => setFreeCaptchaProfile(null)}
           />
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {enteringVisible && (
-          <motion.div
-            key="entering-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.25 }}
-            className="fixed inset-0 z-[9998] flex items-center justify-center px-6"
-            style={{
-              background: "radial-gradient(ellipse at center, rgba(20,0,0,0.92) 0%, rgba(0,0,0,0.98) 70%)",
-              backdropFilter: "blur(6px)",
-              WebkitBackdropFilter: "blur(6px)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-            aria-live="polite"
-            aria-busy="true"
-            role="status"
-          >
-            <motion.div
-              initial={{ scale: 0.85, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              transition={{ type: "spring", stiffness: 220, damping: 22 }}
-              className="flex flex-col items-center gap-6 text-center max-w-sm w-full"
-            >
-              <div className="relative">
-                <motion.div
-                  className="absolute inset-0 rounded-2xl"
-                  style={{ boxShadow: "0 0 60px 8px rgba(229,9,20,0.55)" }}
-                  animate={{ opacity: [0.4, 0.9, 0.4], scale: [1, 1.08, 1] }}
-                  transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
-                />
-                <div className="relative rounded-2xl overflow-hidden ring-2 ring-[#e50914]/70">
-                  {enteringProfile ? (
-                    <ProfileAvatar
-                      avatarId={getStableProfileAvatar(enteringProfile)}
-                      name={enteringProfile.name}
-                      className="w-28 h-28 sm:w-32 sm:h-32"
-                      fallbackColor="#e50914"
-                      eager
-                    />
-                  ) : (
-                    <div className="w-28 h-28 sm:w-32 sm:h-32 bg-[#e50914]/20" />
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <h2
-                  className="text-white text-2xl sm:text-3xl font-normal tracking-tight"
-                  style={{ fontFamily: '"Netflix Sans","Helvetica Neue",Arial,sans-serif' }}
-                >
-                  Entering {enteringProfile?.name || "profile"}…
-                </h2>
-                <p className="text-neutral-400 text-sm">Securing your session — please don't close this screen.</p>
-              </div>
-
-              <div className="relative w-56 h-1 rounded-full overflow-hidden bg-white/10">
-                <motion.div
-                  className="absolute inset-y-0 left-0 w-1/3 rounded-full"
-                  style={{ background: "linear-gradient(90deg,#e50914,#ff5c65,#e50914)" }}
-                  animate={{ x: ["-100%", "300%"] }}
-                  transition={{ duration: 1.3, repeat: Infinity, ease: "easeInOut" }}
-                />
-              </div>
-            </motion.div>
-          </motion.div>
         )}
       </AnimatePresence>
 
@@ -5546,6 +5251,7 @@ function AdminLoginPage() {
   const [siteKey, setSiteKey] = useState<string | null>(null);
   const [captchaReady, setCaptchaReady] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
+  const [loginStage, setLoginStage] = useState<CaptchaStage | null>(null);
   const [gpsRequesting, setGpsRequesting] = useState(false);
   const [gpsPermissionMode, setGpsPermissionMode] = useState<GpsPermissionMode | null>(null);
   // Per-admin GPS policy: public bootstrap intentionally excludes admins, so
@@ -5626,17 +5332,18 @@ function AdminLoginPage() {
   useEffect(() => {
     if (!locationRequired) { setGpsPermissionMode(null); return; }
     if (typeof navigator === "undefined" || !navigator.geolocation) return;
-    if (hasGrantedLocation(pendingClientGeoRef.current)) { setGpsPermissionMode(null); return; }
     let cancelled = false;
     const primeGpsSheet = async () => {
       try {
         if (navigator.permissions?.query) {
           const permission = await navigator.permissions.query({ name: "geolocation" as PermissionName });
           if (cancelled) return;
-          if (permission.state === "granted") setGpsPermissionMode(null);
+          setGpsPermissionMode(permission.state === "granted" ? null : permission.state === "denied" ? "blocked" : "needed");
+        } else if (!cancelled) {
+          setGpsPermissionMode("needed");
         }
       } catch {
-        // The real GPS request on submit is authoritative.
+        if (!cancelled) setGpsPermissionMode("needed");
       }
     };
     void primeGpsSheet();
@@ -5664,9 +5371,6 @@ function AdminLoginPage() {
     }
     // FIRE GEO FIRST synchronously — preserve user activation (Chrome Incognito).
     const hasPreparedGeo = hasGrantedLocation(pendingClientGeoRef.current);
-    // Reuse the request primed by this button's pointerdown. Starting another
-    // request during submit races Chrome's geolocation provider and can turn an
-    // already-granted permission into a false missing-location error.
     const geoPromise = hasPreparedGeo ? undefined : (armedGeoRef.current ?? beginGeolocationCapture());
     const devicePromise = hasPreparedGeo ? undefined : (armedDeviceRef.current ?? beginDeviceFingerprintCapture());
     armedGeoRef.current = null;
@@ -5682,7 +5386,6 @@ function AdminLoginPage() {
     if (hasGrantedLocation(pendingClientGeoRef.current)) return;
     if (!armedGeoRef.current) armedGeoRef.current = beginGeolocationCapture();
     if (!armedDeviceRef.current) armedDeviceRef.current = beginDeviceFingerprintCapture();
-    void import("./lib/secureTransport").then((m) => m.warmupSession()).catch(() => {});
   };
 
   const primeGpsFromPointer = () => {
@@ -5791,7 +5494,7 @@ function AdminLoginPage() {
     }
     try {
       const [location, device] = await Promise.all([geoPromise, devicePromise]);
-      if (hasGrantedLocation(location)) {
+      if (location.status === "granted" && typeof location.latitude === "number" && typeof location.longitude === "number") {
         pendingClientGeoRef.current = { ...location, device };
         setGpsPermissionMode(null);
         notify.success("Location enabled", { id: "gps-permission-ready", description: "Now tap Admin Sign In.", duration: 8500 });
@@ -5816,7 +5519,6 @@ function AdminLoginPage() {
 
   const executeLogin = async (captchaToken?: string, preparedGeo?: LoginLocationPayload) => {
     setLoading(true);
-    setShowCaptcha(false);
     setError("");
     const perf = startPerfTimer("login.admin");
     if (captchaToken) perf.mark("captcha_token_received");
@@ -5829,6 +5531,12 @@ function AdminLoginPage() {
       pendingClientGeoRef.current = null;
       perf.mark("geo_ready");
 
+      const { warmupSession } = await import("./lib/secureTransport");
+      setLoginStage("connecting");
+      await withTimeout(warmupSession(), LOGIN_HANDSHAKE_TIMEOUT_MS, "Connection is busy. Please try again.");
+      perf.mark("handshake_ready");
+
+      setLoginStage("authenticating");
       const data: any = await withTimeout(apiCall("manage-app", { action: "login", username, password, clientGeo, captchaToken }), LOGIN_EDGE_TIMEOUT_MS, "Login took too long. Please try again.");
       perf.mark("manage_app_login_ok");
 
@@ -5868,6 +5576,7 @@ function AdminLoginPage() {
       }
     } finally {
       setLoading(false);
+      setLoginStage(null);
       setShowCaptcha(false);
     }
   };
@@ -5930,9 +5639,10 @@ function AdminLoginPage() {
       </motion.div>
 
       <AnimatePresence>
-        {showCaptcha && (
+        {(showCaptcha || loginStage) && siteKey && (
           <CaptchaModal
-            siteKey={siteKey || undefined}
+            siteKey={siteKey}
+            stage={loginStage}
             onVerify={(token) => { void executeLogin(token); }}
             onCancel={() => { pendingClientGeoRef.current = null; setShowCaptcha(false); }}
           />
@@ -7122,7 +6832,7 @@ function CookiesTab({ emailAccounts }: { emailAccounts: any[] }) {
     const res: any = await apiCall("manage-app", { action: "admin_cookies_list" });
     return (Array.isArray(res?.items) ? res.items : []) as SavedCookieRow[];
   }, []);
-  const { data: savedRowsData, hasData: cookiesHasData, refreshing: cookiesRefreshing, refresh: refreshCookies, setData: setSavedRows } =
+  const { data: savedRowsData, hasData: cookiesHasData, refreshing: cookiesRefreshing, refresh: refreshCookies } =
     useAdminSlice<SavedCookieRow[]>(AdminSliceKeys.cookies, cookiesFetcher);
   const savedRows = savedRowsData || [];
   const loading = !cookiesHasData && cookiesRefreshing;
@@ -7154,7 +6864,7 @@ function CookiesTab({ emailAccounts }: { emailAccounts: any[] }) {
     try {
       const { cookies, format } = parseCookiesAuto(text, filename);
       if (!cookies.length) throw new Error("No cookies detected — expected JSON, Netscape cookies.txt, or 'name=value; …' header format");
-      const response = await apiCall("manage-app", {
+      await apiCall("manage-app", {
         action: "admin_cookies_save",
         imap_user: selected,
         label: selectedAcc?.label || selected,
@@ -7163,15 +6873,13 @@ function CookiesTab({ emailAccounts }: { emailAccounts: any[] }) {
         count: cookies.length,
         content: text,
       });
-      const saved = response?.item as SavedCookieRow | undefined;
-      if (!saved?.imap_user) throw new Error("Save was not confirmed by the server. Please retry.");
-      setSavedRows([saved, ...savedRows.filter((row) => row.imap_user.toLowerCase() !== saved.imap_user.toLowerCase())]);
       notify.success(`Saved ${cookies.length} cookie${cookies.length === 1 ? "" : "s"}`, {
         description: `${selected} • ${format.toUpperCase()}${savedByUser[selected.toLowerCase()] ? " (replaced previous)" : ""}`,
       });
       delete contentCache.current[selected.toLowerCase()];
       applyDraftText("");
       if (fileRef.current) fileRef.current.value = "";
+      await refresh();
       setSelected(null);
     } catch (e: any) {
       notify.error("Could not save cookies", { description: e?.message || String(e) });
@@ -7624,7 +7332,7 @@ function CookiesTab({ emailAccounts }: { emailAccounts: any[] }) {
 function AdminPanel() {
   usePageHead("Admin Dashboard — Netflix Mail", "Admin control panel for managing users, sessions, notifications, and email accounts.", "/admin/dashboard");
   const ADMIN_ACTIVE_TAB_KEY = "admin_active_tab_v1";
-  const [activeTab, setActiveTab] = useState<"users" | "security" | "emails" | "settings" | "notifications" | "inbox" | "logins" | "allmails" | "deploy" | "tv" | "cookies" | "directlink" | "developer">(() => {
+  const [activeTab, setActiveTab] = useState<"users" | "security" | "emails" | "settings" | "notifications" | "inbox" | "logins" | "allmails" | "deploy" | "tv" | "cookies" | "directlink">(() => {
     try {
       const raw = sessionStorage.getItem(ADMIN_ACTIVE_TAB_KEY);
       if (!raw) return "users";
@@ -7683,62 +7391,6 @@ function AdminPanel() {
       } catch {}
     })();
   }, []);
-  // ---- Developer links (header pill + /developers showcase) ----
-  type DevLinkRow = { id: string; label: string; url: string; role: string; description: string; avatar: string };
-  const newDevRow = (): DevLinkRow => ({ id: `dev_${Math.random().toString(36).slice(2, 9)}`, label: "", url: "", role: "", description: "", avatar: "" });
-  const [devLinks, setDevLinks] = useState<DevLinkRow[]>([]);
-  const [devButtonLabel, setDevButtonLabel] = useState("Links");
-  const [savingDevLinks, setSavingDevLinks] = useState(false);
-  const loadDevLinksRef = useRef(false);
-  useEffect(() => {
-    if (loadDevLinksRef.current) return;
-    loadDevLinksRef.current = true;
-    (async () => {
-      try {
-        const res: any = await apiCall("manage-app", { action: "get_settings", key: "developer_links" });
-        const v = res?.value || null;
-        if (v && typeof v === "object") {
-          const rows = Array.isArray(v.links) ? v.links.map((l: any) => ({
-            id: String(l?.id || `dev_${Math.random().toString(36).slice(2, 9)}`),
-            label: String(l?.label || ""), url: String(l?.url || ""), role: String(l?.role || ""),
-            description: String(l?.description || ""), avatar: String(l?.avatar || ""),
-          })) : [];
-          setDevLinks(rows);
-          if (typeof v.buttonLabel === "string" && v.buttonLabel.trim()) setDevButtonLabel(v.buttonLabel.trim());
-        }
-      } catch {}
-    })();
-  }, []);
-  const patchDevLink = (idx: number, patch: Partial<DevLinkRow>) =>
-    setDevLinks((rows) => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
-  const moveDevLink = (idx: number, dir: -1 | 1) =>
-    setDevLinks((rows) => {
-      const next = [...rows];
-      const to = idx + dir;
-      if (to < 0 || to >= next.length) return rows;
-      [next[idx], next[to]] = [next[to], next[idx]];
-      return next;
-    });
-  const saveDevLinks = async () => {
-    const cleaned = devLinks
-      .map((r) => ({ ...r, url: r.url.trim(), label: r.label.trim() || "Link" }))
-      .filter((r) => /^https?:\/\//i.test(r.url));
-    if (devLinks.some((r) => r.url.trim() && !/^https?:\/\//i.test(r.url.trim()))) {
-      notify.error("Every link must start with http:// or https://");
-      return;
-    }
-    setSavingDevLinks(true);
-    try {
-      await apiCall("manage-app", { action: "save_developer_links", value: { links: cleaned, buttonLabel: devButtonLabel.trim() || "Links" } });
-      notify.success(cleaned.length ? `Saved ${cleaned.length} link${cleaned.length > 1 ? "s" : ""}` : "Links pill hidden (no links)");
-      try { await refreshBootstrap(); } catch {}
-    } catch (err) {
-      notify.error(err instanceof Error ? err.message : "Failed to save links");
-    } finally {
-      setSavingDevLinks(false);
-    }
-  };
-
   const saveContactInfo = async () => {
     setSavingContactInfo(true);
     try {
@@ -7828,6 +7480,9 @@ function AdminPanel() {
     } catch { notify.error("Copy failed"); }
   };
   const [primaryCfUrls, setPrimaryCfUrls] = useState<string[]>([]);
+  // Location alert toggle
+  const [ipwhoAlertEnabled, setIpwhoAlertEnabled] = useState(false);
+  const [savingIpwho, setSavingIpwho] = useState(false);
   const [locationPolicyRequired, setLocationPolicyRequired] = useState(true);
   const [tvFeatureEnabled, setTvFeatureEnabled] = useState(true);
   const [tvSearch, setTvSearch] = useState("");
@@ -8088,6 +7743,7 @@ function AdminPanel() {
   const [notifImageUrl, setNotifImageUrl] = useState("");
   const [notifImageUploading, setNotifImageUploading] = useState(false);
   const [notifCategory, setNotifCategory] = useState<"announcement" | "update" | "security" | "maintenance" | "promo" | "billing">("announcement");
+  const [notifPriority, setNotifPriority] = useState<"low" | "normal" | "high" | "critical">("normal");
   const [notifActionUrl, setNotifActionUrl] = useState("");
   const [notifActionLabel, setNotifActionLabel] = useState("");
   
@@ -8102,8 +7758,7 @@ function AdminPanel() {
     [platformSearch],
   );
   const [notifLocked, setNotifLocked] = useState(false);
-  const [notifShowFrequency, setNotifShowFrequency] = useState<"once" | "session">("session");
-  const [notifSortOrder, setNotifSortOrder] = useState<string>("");
+  const [notifShowFrequency, setNotifShowFrequency] = useState<"once" | "always" | "session" | "daily">("once");
   const [notifMode, setNotifMode] = useState<"popup" | "silent" | "banner">("popup");
   const [sendingNotif, setSendingNotif] = useState(false);
   const [editingNotif, setEditingNotif] = useState<any | null>(null);
@@ -8283,6 +7938,7 @@ function AdminPanel() {
 
         const cs = Number(s.session_limits?.maxPerUser);
         if (Number.isFinite(cs) && cs >= 0) setConcurrentSessionLimit(String(cs));
+        setIpwhoAlertEnabled(s.ipwho_alert?.enabled === true);
         setLocationPolicyRequired(s.location_policy?.required !== false);
         setTvFeatureEnabled(s.tv_feature?.enabled !== false);
         const fac = Number(s.free_avatar_cooldown?.minutes);
@@ -8392,6 +8048,7 @@ function AdminPanel() {
       if (Number.isFinite(m2) && m2 >= 0) setAdminSessionTimeoutMin(String(m2));
       const cs = Number(s.session_limits?.maxPerUser);
       if (Number.isFinite(cs) && cs >= 0) setConcurrentSessionLimit(String(cs));
+      setIpwhoAlertEnabled(s.ipwho_alert?.enabled === true);
       setLocationPolicyRequired(s.location_policy?.required !== false);
       setTvFeatureEnabled(s.tv_feature?.enabled !== false);
       const fac = Number(s.free_avatar_cooldown?.minutes);
@@ -8456,7 +8113,7 @@ function AdminPanel() {
         key: "session_config",
         value: { timeoutMinutes: m },
       });
-      setSessionTimeoutMin(String(m)); writeCachedTimeoutMinutes("user", m);
+      setSessionTimeoutMin(String(m));
       notify.success(m === 0 ? "Session timeout disabled" : `Session timeout set to ${m} min`);
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Failed to save session timeout");
@@ -8473,7 +8130,7 @@ function AdminPanel() {
         key: "admin_session_config",
         value: { timeoutMinutes: m },
       });
-      setAdminSessionTimeoutMin(String(m)); writeCachedTimeoutMinutes("admin", m);
+      setAdminSessionTimeoutMin(String(m));
       notify.success(m === 0 ? "Admin session timeout disabled" : `Admin auto-logout set to ${m} min`);
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Failed to save admin session timeout");
@@ -8816,6 +8473,19 @@ function AdminPanel() {
     }
   };
 
+  const toggleIpwhoAlert = async () => {
+    const next = !ipwhoAlertEnabled;
+    setIpwhoAlertEnabled(next);
+    setSavingIpwho(true);
+    try {
+      await apiCall("manage-app", { action: "set_settings", key: "ipwho_alert", value: { enabled: next } });
+      notify.success(next ? "Legacy ipwho.is alert enabled" : "Legacy ipwho.is alert disabled");
+    } catch (err) {
+      setIpwhoAlertEnabled(!next);
+      notify.error(err instanceof Error ? err.message : "Failed");
+    } finally { setSavingIpwho(false); }
+  };
+
   const toggleLocationPolicy = async () => {
     const next = !locationPolicyRequired;
     setLocationPolicyRequired(next);
@@ -8945,10 +8615,10 @@ function AdminPanel() {
         description: notifDescription.trim() || null,
         image_url: notifImageUrl.trim() || null,
         category: notifCategory,
+        priority: notifPriority,
         kind: "flash",
         mode: notifMode,
         show_frequency: notifShowFrequency,
-        sort_order: notifSortOrder.trim() === "" ? null : Number(notifSortOrder),
         platform_icon: resolvePlatformOption(notifPlatformIcon).id || null,
         sub_kind: notifTemplate || null,
         locked: notifLocked,
@@ -8962,7 +8632,7 @@ function AdminPanel() {
       setNotifTitle(""); setNotifBody(""); setNotifDescription(""); setNotifImageUrl("");
       setNotifActionUrl(""); setNotifActionLabel("");
       setNotifExpiresDays(""); setNotifPlatformIcon(""); setNotifTemplate("");
-      setNotifLocked(false); setNotifSortOrder("");
+      setNotifLocked(false);
       await reloadAdminNotifs();
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Failed to send");
@@ -8993,8 +8663,7 @@ function AdminPanel() {
         action_url: e.action_url?.trim() || null,
         platform_icon: resolvePlatformOption(e.platform_icon).id || null,
         locked: !!e.locked,
-        show_frequency: e.show_frequency === "once" ? "once" : "session",
-        sort_order: e.sort_order === "" || e.sort_order === null || e.sort_order === undefined ? null : Number(e.sort_order),
+        priority: e.priority || "normal",
         audience: e.audience || "all",
         target_user_id: e.audience === "user" ? (e.target_user_id || null) : null,
       });
@@ -9015,10 +8684,10 @@ function AdminPanel() {
     setNotifPlatformIcon(resolvePlatformOption(n.platform_icon).id || "");
     setNotifLocked(!!n.locked);
     setNotifCategory(n.category || "announcement");
+    setNotifPriority(n.priority || "normal");
     setNotifAudience(n.audience || "all");
     setNotifTargetUser(n.target_user_id || "");
-    setNotifShowFrequency(n.show_frequency === "once" ? "once" : "session");
-    setNotifSortOrder(n.sort_order === null || n.sort_order === undefined ? "" : String(n.sort_order));
+    setNotifShowFrequency(n.show_frequency || "once");
     setNotifMode(n.mode || "popup");
     notify.success("Copied to composer — edit and publish as new");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -9390,7 +9059,6 @@ function AdminPanel() {
     { id: "security" as const, label: "Security", icon: ShieldCheck },
 
     { id: "emails" as const, label: "Email Accounts", icon: Server },
-    { id: "developer" as const, label: "Links", icon: Code2 },
     { id: "settings" as const, label: "Settings", icon: Settings },
     { id: "deploy" as const, label: "Deploy", icon: Server },
   ];
@@ -10152,8 +9820,21 @@ function AdminPanel() {
                                 </section>
                               )}
 
-
-
+                              {u.isFree && (
+                                <section className="bg-white rounded-2xl p-4 sm:p-5 ring-1 ring-slate-200/70 flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="text-[13px] font-black text-slate-900">Show expiry pill</div>
+                                    <div className="text-[11px] text-slate-500 leading-snug mt-0.5">
+                                      {editAutoDelete ? "Live countdown visible to user." : "Countdown hidden."}
+                                    </div>
+                                  </div>
+                                  <button type="button" onClick={() => setEditAutoDelete((v) => !v)}
+                                    aria-pressed={editAutoDelete}
+                                    className={`relative shrink-0 w-14 h-8 rounded-full transition-colors ${editAutoDelete ? "bg-emerald-500" : "bg-slate-300"}`}>
+                                    <span className={`absolute top-1 w-6 h-6 rounded-full bg-white shadow-md transition-transform ${editAutoDelete ? "translate-x-7" : "translate-x-1"}`} />
+                                  </button>
+                                </section>
+                              )}
 
                               {/* Plan window */}
                               {!u.isFree && (u as any).role !== "admin" && (
@@ -10626,6 +10307,23 @@ function AdminPanel() {
 
 
 
+
+            <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
+              <h2 className="font-black text-base sm:text-lg mb-4 flex items-center gap-2">
+                <div className="bg-red-50 p-1.5 rounded-lg"><Send className="w-4 h-4 text-red-600" /></div>
+                ipwho.is provider
+              </h2>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-slate-800">Enable ipwho.is for login location</p>
+                  <p className="text-xs text-slate-500 mt-1">When OFF, ipwho.is is not called at all — no IP goes to ipwho.is and the extra ipwho.is Telegram dump is not sent. Other providers (ipapi.co, ip-api.com, ipinfo.io, freeipapi.com) and device GPS still work.</p>
+                </div>
+                <button onClick={toggleIpwhoAlert} disabled={savingIpwho}
+                  className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${ipwhoAlertEnabled ? "bg-green-500" : "bg-slate-300"}`}>
+                  <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${ipwhoAlertEnabled ? "translate-x-6" : "translate-x-0.5"}`} />
+                </button>
+              </div>
+            </section>
 
             <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
               <h2 className="font-black text-base sm:text-lg mb-4 flex items-center gap-2">
@@ -11483,19 +11181,17 @@ function AdminPanel() {
                         className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900" />
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Popup</label>
-                        <select value={notifShowFrequency} onChange={(e) => setNotifShowFrequency(e.target.value as any)}
-                          className="w-full px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 font-medium focus:outline-none focus:border-slate-900">
-                          <option value="session">Every login session</option>
-                          <option value="once">Only one time</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Order (1 = first)</label>
-                        <input value={notifSortOrder} onChange={(e) => setNotifSortOrder(e.target.value)} type="number" min="1" placeholder="Auto (newest first)"
-                          className="w-full px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900" />
-                      </div>
+                      <select value={notifPriority} onChange={(e) => setNotifPriority(e.target.value as any)}
+                        className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 font-medium capitalize focus:outline-none focus:border-slate-900">
+                        {(["low","normal","high","critical"] as const).map(p => <option key={p} value={p} className="capitalize">{p} priority</option>)}
+                      </select>
+                      <select value={notifShowFrequency} onChange={(e) => setNotifShowFrequency(e.target.value as any)}
+                        className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 font-medium focus:outline-none focus:border-slate-900">
+                        <option value="once">Show once</option>
+                        <option value="session">Every session</option>
+                        <option value="daily">Once per day</option>
+                        <option value="always">Always until read</option>
+                      </select>
                     </div>
                   </div>
                 </details>
@@ -11516,7 +11212,7 @@ function AdminPanel() {
                   <span className="text-[10px] text-slate-400">how users will see it</span>
                 </div>
                 <div className="rounded-2xl overflow-hidden mx-auto max-w-[400px] bg-white border border-slate-200 shadow-sm">
-                  <div className="h-[3px] bg-slate-900" />
+                  <div className={`h-[3px] ${notifPriority === "critical" ? "bg-rose-500" : notifPriority === "high" ? "bg-amber-500" : notifPriority === "normal" ? "bg-sky-500" : "bg-slate-400"}`} />
                   {notifImageUrl && (
                     <div className="aspect-[16/9] w-full bg-slate-100 overflow-hidden">
                       <img src={notifImageUrl} referrerPolicy="no-referrer" className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
@@ -11580,11 +11276,9 @@ function AdminPanel() {
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-900 text-white font-semibold">
-                                {typeof n.sort_order === "number" ? `Order ${n.sort_order}` : "Order auto"}
-                              </span>
-                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-100 font-medium">
-                                {n.show_frequency === "once" ? "Popup once" : "Popup every session"}
+                              <span className={`inline-flex items-center gap-1 text-[10px] font-semibold capitalize ${n.priority === "critical" ? "text-rose-600" : n.priority === "high" ? "text-amber-600" : n.priority === "normal" ? "text-sky-600" : "text-slate-500"}`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${n.priority === "critical" ? "bg-rose-500" : n.priority === "high" ? "bg-amber-500" : n.priority === "normal" ? "bg-sky-500" : "bg-slate-400"}`} />
+                                {n.priority || "low"}
                               </span>
                               <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 capitalize font-medium">{n.category || "announcement"}</span>
                               <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${n.locked ? "bg-amber-50 text-amber-700 border border-amber-100" : "bg-emerald-50 text-emerald-700 border border-emerald-100"}`}>
@@ -11601,6 +11295,12 @@ function AdminPanel() {
                             </div>
                             <p className="font-bold text-[14.5px] text-slate-900 truncate">{n.title}</p>
                             <p className="text-[12.5px] text-slate-600 line-clamp-2 mt-0.5">{n.body}</p>
+                            <div className="flex items-center gap-3 mt-2 flex-wrap text-[11px]">
+                              <span className="inline-flex items-center gap-1 text-slate-600"><span className="font-bold">{n.seenCount || 0}</span> <span className="text-slate-400">seen</span></span>
+                              <span className="inline-flex items-center gap-1 text-emerald-700"><span className="font-bold">{n.readCount || 0}</span> <span className="text-slate-400">read</span></span>
+                              <span className="inline-flex items-center gap-1 text-sky-700"><span className="font-bold">{n.clickCount || 0}</span> <span className="text-slate-400">clicked</span></span>
+                              <span className="inline-flex items-center gap-1 text-rose-600"><span className="font-bold">{n.deletedCount || 0}</span> <span className="text-slate-400">deleted</span></span>
+                            </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-slate-100">
@@ -11667,11 +11367,10 @@ function AdminPanel() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 block">Popup</label>
-                    <select value={editingNotif.show_frequency === "once" ? "once" : "session"} onChange={(e) => setEditingNotif({ ...editingNotif, show_frequency: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg text-sm text-slate-900">
-                      <option value="session">Every login session</option>
-                      <option value="once">Only one time</option>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 block">Priority</label>
+                    <select value={editingNotif.priority || "normal"} onChange={(e) => setEditingNotif({ ...editingNotif, priority: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-lg text-sm text-slate-900 capitalize">
+                      {["low","normal","high","critical"].map(p => <option key={p} value={p} className="capitalize">{p}</option>)}
                     </select>
                   </div>
                   <div>
@@ -11682,12 +11381,6 @@ function AdminPanel() {
                       <option value="user">Specific user</option>
                     </select>
                   </div>
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 block">Order (1 = shows first)</label>
-                  <input type="number" min="1" value={editingNotif.sort_order ?? ""} placeholder="Auto (newest first)"
-                    onChange={(e) => setEditingNotif({ ...editingNotif, sort_order: e.target.value === "" ? null : Number(e.target.value) })}
-                    className="w-full px-3 py-2 border rounded-lg text-sm text-slate-900" />
                 </div>
                 {editingNotif.audience === "user" && (
                   <select value={editingNotif.target_user_id || ""} onChange={(e) => setEditingNotif({ ...editingNotif, target_user_id: e.target.value })}
@@ -11961,86 +11654,6 @@ function AdminPanel() {
                   ))}
                 </div>
               )}
-            </section>
-          </div>
-        )}
-
-        {activeTab === "developer" && (
-          <div className="space-y-4 sm:space-y-6">
-            <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
-              <h2 className="font-black text-base sm:text-lg mb-1 flex items-center gap-2">
-                <div className="bg-red-50 p-1.5 rounded-lg"><Code2 className="w-4 h-4 text-red-600" /></div>
-                Links
-              </h2>
-              <p className="text-[11px] text-slate-500 mb-4">
-                Adds a glowing <b>Links</b> pill to the user header — use it for developers, support, channels, or any other link. One link opens it directly — two or more open a dedicated links page at <code className="bg-slate-100 px-1 rounded">/developers</code>. Leave empty to hide the pill.
-              </p>
-
-              <div className="mb-5 max-w-xs">
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1.5 ml-1">Pill label</label>
-                <input type="text" value={devButtonLabel} maxLength={24} placeholder="Links"
-                  onChange={(e) => setDevButtonLabel(e.target.value)}
-                  className="w-full bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-red-500 text-sm" />
-              </div>
-
-              <div className="space-y-3">
-                {devLinks.length === 0 && (
-                  <p className="text-xs text-slate-400 border border-dashed rounded-xl p-4 text-center">No links yet.</p>
-                )}
-                {devLinks.map((row, idx) => (
-                  <div key={row.id} className="rounded-2xl border bg-slate-50/70 p-3 sm:p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">#{idx + 1}</span>
-                      <div className="flex items-center gap-1">
-                        <button type="button" onClick={() => moveDevLink(idx, -1)} disabled={idx === 0}
-                          className="h-8 w-8 rounded-lg border bg-white text-slate-500 hover:text-slate-900 disabled:opacity-40 flex items-center justify-center" title="Move up">
-                          <ChevronUp className="w-4 h-4" />
-                        </button>
-                        <button type="button" onClick={() => moveDevLink(idx, 1)} disabled={idx === devLinks.length - 1}
-                          className="h-8 w-8 rounded-lg border bg-white text-slate-500 hover:text-slate-900 disabled:opacity-40 flex items-center justify-center" title="Move down">
-                          <ChevronDown className="w-4 h-4" />
-                        </button>
-                        <button type="button" onClick={() => setDevLinks((rows) => rows.filter((_, i) => i !== idx))}
-                          className="h-8 w-8 rounded-lg border bg-white text-slate-400 hover:text-red-600 hover:border-red-200 flex items-center justify-center" title="Remove">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <input type="text" value={row.label} maxLength={60} placeholder="Name (e.g. Support)"
-                        onChange={(e) => patchDevLink(idx, { label: e.target.value })}
-                        className="bg-white border rounded-xl p-2.5 text-sm outline-none focus:ring-2 focus:ring-red-500" />
-                      <input type="text" value={row.role} maxLength={80} placeholder="Subtitle (e.g. Contact for issues)"
-                        onChange={(e) => patchDevLink(idx, { role: e.target.value })}
-                        className="bg-white border rounded-xl p-2.5 text-sm outline-none focus:ring-2 focus:ring-red-500" />
-                      <input type="url" value={row.url} maxLength={600} placeholder="https://t.me/yourhandle"
-                        onChange={(e) => patchDevLink(idx, { url: e.target.value })}
-                        className="sm:col-span-2 bg-white border rounded-xl p-2.5 text-sm outline-none focus:ring-2 focus:ring-red-500" />
-                      <input type="url" value={row.avatar} maxLength={600} placeholder="Avatar image URL (optional)"
-                        onChange={(e) => patchDevLink(idx, { avatar: e.target.value })}
-                        className="bg-white border rounded-xl p-2.5 text-sm outline-none focus:ring-2 focus:ring-red-500" />
-                      <input type="text" value={row.description} maxLength={240} placeholder="Short description (optional)"
-                        onChange={(e) => patchDevLink(idx, { description: e.target.value })}
-                        className="bg-white border rounded-xl p-2.5 text-sm outline-none focus:ring-2 focus:ring-red-500" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <button type="button" onClick={() => setDevLinks((rows) => (rows.length >= 24 ? rows : [...rows, newDevRow()]))}
-                  className="h-10 px-4 rounded-xl border text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5">
-                  <Plus className="w-4 h-4" /> Add link
-                </button>
-                <button onClick={saveDevLinks} disabled={savingDevLinks}
-                  className="h-10 px-5 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.98] transition disabled:opacity-50">
-                  {savingDevLinks ? "Saving…" : "Save Links"}
-                </button>
-                <a href="/developers" target="_blank" rel="noreferrer"
-                  className="h-10 px-4 rounded-xl border text-sm font-bold text-slate-600 hover:bg-slate-50 flex items-center gap-1.5">
-                  <ExternalLink className="w-4 h-4" /> Preview page
-                </a>
-              </div>
             </section>
           </div>
         )}
@@ -12889,12 +12502,6 @@ function ChangePasswordModal({ user, onDone, forced = false }: { user: UserData;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    if (!forced) return;
-    window.dispatchEvent(new CustomEvent("notif:pausePopup"));
-    return () => { window.dispatchEvent(new CustomEvent("notif:resumePopup")); };
-  }, [forced]);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -12912,12 +12519,7 @@ function ChangePasswordModal({ user, onDone, forced = false }: { user: UserData;
       stored.mustChangePassword = false;
       sessionSet("user" as any, JSON.stringify(stored));
       notify.success("Password changed successfully!");
-      // The forced-password modal intentionally blocks other overlays. Fetch now
-      // and let the notification popup render immediately after this modal closes.
-      const { resetNotifications, refreshNotifications } = await import("./lib/notificationsStore");
-      resetNotifications(user.id);
       onDone();
-      void refreshNotifications(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to change password");
     } finally {
@@ -12926,7 +12528,7 @@ function ChangePasswordModal({ user, onDone, forced = false }: { user: UserData;
   };
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} role="dialog" aria-modal="true" aria-labelledby="change-password-modal-title" className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
         className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
         <div className="flex justify-center mb-4">
@@ -12934,7 +12536,7 @@ function ChangePasswordModal({ user, onDone, forced = false }: { user: UserData;
             <Key className="text-white w-6 h-6" />
           </div>
         </div>
-        <h2 id="change-password-modal-title" className="text-xl font-black text-center text-slate-900 mb-1">
+        <h2 className="text-xl font-black text-center text-slate-900 mb-1">
           {forced ? "Set Your Password" : "Change Password"}
         </h2>
         <p className="text-slate-500 text-center text-xs mb-6">
@@ -13382,12 +12984,6 @@ function EmailViewer() {
   const [cpShow, setCpShow] = useState(false);
   const [cpBusy, setCpBusy] = useState(false);
   const canChangePassword = !!user.id && !user.isFree;
-  const openChangePassword = useCallback(() => {
-    setShowChangePwd(true);
-  }, []);
-  const closeChangePassword = useCallback(() => {
-    setShowChangePwd(false);
-  }, []);
   const submitChangePassword = useCallback(async () => {
     if (!user.id) return;
     if (!cpCurrent.trim()) { notify.error("Enter your current password"); return; }
@@ -13398,11 +12994,11 @@ function EmailViewer() {
     try {
       await apiCall("manage-app", { action: "change_password", id: user.id, current_password: cpCurrent, new_password: cpNext });
       notify.success("Password changed successfully");
-      setCpCurrent(""); setCpNext(""); setCpConfirm(""); closeChangePassword();
+      setCpCurrent(""); setCpNext(""); setCpConfirm(""); setShowChangePwd(false);
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Failed to change password");
     } finally { setCpBusy(false); }
-  }, [user.id, cpCurrent, cpNext, cpConfirm, closeChangePassword]);
+  }, [user.id, cpCurrent, cpNext, cpConfirm]);
   const saveProfilePrefsLocally = useCallback((nextPrefs: UserProfilePrefs) => {
     setProfilePrefs(nextPrefs);
     try {
@@ -13513,17 +13109,11 @@ function EmailViewer() {
   const { view: workflowView, setChoice: setWorkflowViewRaw } = useWorkflowView(user, userFeatures);
   const setWorkflowView = useCallback((v: "gmail" | "tv" | "link") => {
     setWorkflowViewRaw(v);
-    // Keep the current tab/session cache in sync immediately. The server write
-    // remains authoritative, but returning to the chooser must not show stale UI.
-    try {
-      (user as any).lastWorkflowView = v;
-      const stored = JSON.parse(sessionGet("user" as any) || "{}");
-      sessionSet("user" as any, JSON.stringify({ ...stored, lastWorkflowView: v }));
-    } catch {}
     // Persist to the server so the choice follows the user across browsers/devices.
     // Fire-and-forget — a network hiccup should never block the UI transition.
     try {
       apiCall("manage-app", { action: "set_workflow_view", view: v })
+        .then(() => { try { (user as any).lastWorkflowView = v; } catch {} })
         .catch(() => {});
     } catch {}
   }, [setWorkflowViewRaw, user]);
@@ -13694,9 +13284,7 @@ function EmailViewer() {
   const loadCachedEmailsDirect = useCallback(async (limit = 200): Promise<Email[]> => {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
     const started = performance.now();
-    // Always bypass Cloudflare's list-delta cache here. This method runs after
-    // manual IMAP sync and must see the rows that were just committed.
-    const delta = await apiCall("manage-app", { action: "list_delta", since: 0, limit: safeLimit, baseline: true });
+    const delta = await fetchListDelta({ since: 0, limit: safeLimit, baseline: true });
     const rows = Array.isArray(delta?.rows) ? delta.rows as Email[] : [];
     pushDiag({
       ts: Date.now(),
@@ -13715,24 +13303,11 @@ function EmailViewer() {
     // an explicit delete list. Never let a shorter/filtered baseline erase rows
     // already painted from IndexedDB; only delta removedIds may remove emails.
     const merged = currentEmails.length > 0 ? mergeEmailsById([rows, currentEmails]) : rows;
-    // Keep the per-user IndexedDB snapshot and cursor aligned with the direct
-    // post-refresh baseline. Otherwise navigation can repaint an older local
-    // snapshot and the one-shot delta effect will not run again for this scope.
-    if (user?.id && rows.length > 0) {
-      try {
-        const db = await openInboxDB(user.id);
-        const cachedRows = rows as unknown as CachedEmail[];
-        const newCursor = cachedRows.reduce((max, row) => Math.max(max, Number(row.modseq || 0)), 0);
-        await writeDelta(db, { rows: cachedRows, removedIds: [], newCursor });
-      } catch (cacheErr) {
-        pushDiag({ ts: Date.now(), kind: "cache", endpoint: "idb:post-refresh", error: cacheErr instanceof Error ? cacheErr.message : String(cacheErr) });
-      }
-    }
     setEmails(merged);
     setError(null);
     setLastUpdated(new Date());
     return merged;
-  }, [pushDiag, setEmails, emails, user?.id]);
+  }, [pushDiag, setEmails, emails, fetchListDelta]);
 
   const loadCachedEmails = useCallback(async (opts?: { bust?: boolean; limit?: number }) => {
     const bust = !!opts?.bust;
@@ -13919,18 +13494,26 @@ function EmailViewer() {
     const toastId = "nf-refresh";
     notify.loading("Checking Netflix mail…", { id: toastId });
     const runRefresh = async () => {
-      // There is one authoritative IMAP refresh path. The Worker proxies this
-      // same function, so calling it after a direct timeout duplicated the job
-      // and doubled the wait while the first server run was still completing.
-      return await syncDirectFromSupabase();
+      await refreshEmailFiltersForViewer();
+      await loadCachedEmails({ limit: 200 });
+      // Manual refresh must not depend on Cloudflare Worker health/config.
+      // Use the Supabase IMAP sync first; Worker is only a last-resort cache path.
+      return (await syncDirectFromSupabase()) || (await syncViaWorker());
     };
     try {
-      // Exactly one IMAP sync per click. Replaying a timed-out request starts a
-      // second server job while the first may still be unwinding and can keep
-      // the UI busy far beyond the fixed transport deadline.
-      const synced: Awaited<ReturnType<typeof syncViaWorker>> = await runRefresh();
+      let synced: Awaited<ReturnType<typeof syncViaWorker>> = null;
+      try {
+        synced = await runRefresh();
+      } catch (transient) {
+        const tmsg = transient instanceof Error ? transient.message : String(transient);
+        if (/Secure connection|handshake|Failed to fetch|NetworkError|busy/i.test(tmsg)) {
+          await new Promise((r) => setTimeout(r, 700));
+          synced = await runRefresh();
+        } else {
+          throw transient;
+        }
+      }
       let merged: Email[] = emailsRef.current;
-      let recoveredFromCache = false;
       if (synced) {
         // fetch-emails returns only newly fetched rows. Repaint from the full
         // cached inbox after sync so a zero-new refresh never blanks the inbox.
@@ -13940,18 +13523,6 @@ function EmailViewer() {
         setEmails(merged);
         setError(null);
         setLastUpdated(new Date());
-      } else {
-        // The IMAP sync can finish server-side just after a mobile request's
-        // transport deadline. Re-read the authoritative cache before reporting
-        // a failure so a successfully inserted newest mail appears immediately.
-        const cachedAfterDeadline = await loadCachedEmailsDirect(200).catch(() => null);
-        if (cachedAfterDeadline) {
-          merged = cachedAfterDeadline;
-          recoveredFromCache = true;
-          setEmails(merged);
-          setError(null);
-          setLastUpdated(new Date());
-        }
       }
       const visible = filterVisibleEmails(merged, profilePrefs, user);
       const newCount = visible.filter((e) => !beforeIds.has(e.id)).length;
@@ -13970,8 +13541,14 @@ function EmailViewer() {
           description: "Freshly delivered to your inbox",
           duration: 2600,
         });
-      } else if (!synced && !recoveredFromCache) {
-        notify.error("Mail check timed out", { description: "Please tap Refresh once to try again.", duration: 3400 });
+      } else if (synced && synced.inserted > 0) {
+        // Server saved new rows but our visible filter hid them (assigned-account scope, etc.)
+        notify.info(`${synced.inserted} new email${synced.inserted === 1 ? "" : "s"} synced`, {
+          description: "Not visible in this inbox view",
+          duration: 3000,
+        });
+      } else if (!synced) {
+        notify.error("Sync did not run", { description: "Worker and direct email function both failed", duration: 3400 });
       } else {
         notify.success(visible.length > 0 ? "No new mail yet" : "No Netflix emails yet", {
           duration: 2000,
@@ -14053,7 +13630,6 @@ function EmailViewer() {
   // ============================================================================
   const idbRef = useRef<Awaited<ReturnType<typeof openInboxDB>> | null>(null);
   const instantInboxRunKeyRef = useRef("");
-  const instantInboxGenerationRef = useRef(0);
   const instantInboxAccountKey = useMemo(
     () => refreshAccountLabels === undefined
       ? "unknown"
@@ -14061,8 +13637,6 @@ function EmailViewer() {
     [refreshAccountLabels],
   );
   useEffect(() => {
-    const generation = ++instantInboxGenerationRef.current;
-    const isCurrentRun = () => instantInboxGenerationRef.current === generation;
     // Hard-gate: no Gmail/IMAP work unless the user is in the Gmail workflow.
     // TV and Direct-Link views must never trigger list_delta, IDB paint,
     // worker refresh, or any fetch-emails call.
@@ -14075,10 +13649,8 @@ function EmailViewer() {
       (async () => {
         try {
           const db = await openInboxDB(user.id);
-          if (!isCurrentRun()) return;
           idbRef.current = db;
           const cached = await readLatestEmails(db, 200, undefined);
-          if (!isCurrentRun()) return;
           if (cached.length > 0) {
             setEmails(cached as unknown as Email[]);
             setLastUpdated(new Date());
@@ -14098,16 +13670,13 @@ function EmailViewer() {
       let db: Awaited<ReturnType<typeof openInboxDB>> | null = null;
       try {
         db = await openInboxDB(user.id);
-        if (!isCurrentRun()) return;
         idbRef.current = db;
         
         await purgeEmailsOutsideScope(db, refreshAccountLabels);
         await refreshEmailFiltersForViewer();
-        if (!isCurrentRun()) return;
 
         // ---- (1) Instant paint from IDB ----
         const cached = await readLatestEmails(db, 200, refreshAccountLabels);
-        if (!isCurrentRun()) return;
         
         if (cached.length > 0) {
           setEmails(cached as unknown as Email[]);
@@ -14126,7 +13695,6 @@ function EmailViewer() {
         const cursor = cached.length === 0 ? 0 : storedCursor;
         const started = performance.now();
         const delta = await fetchListDelta({ since: cursor, limit: cursor === 0 ? 1000 : 500 });
-        if (!isCurrentRun()) return;
         pushDiag({
           ts: Date.now(),
           kind: "sync",
@@ -14142,7 +13710,6 @@ function EmailViewer() {
         if (rows.length > 0 || removedIds.length > 0 || newCursor > cursor) {
           await writeDelta(db, { rows, removedIds, newCursor });
           const fresh = await readLatestEmails(db, 200, refreshAccountLabels);
-          if (!isCurrentRun()) return;
           
           if (fresh.length > 0) {
             setEmails(fresh as unknown as Email[]);
@@ -14162,7 +13729,7 @@ function EmailViewer() {
         pushDiag({ ts: Date.now(), kind: "cache", endpoint: "instant-inbox", error: msg });
       } finally {
         // Start the countdown only after the instant cache/delta load has had a chance to paint.
-        if (isCurrentRun()) markInboxReady();
+        markInboxReady();
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -14256,7 +13823,6 @@ function EmailViewer() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
-      <AutoPopupNotification />
       <h1 className="sr-only">Email Inbox — Netflix Mail</h1>
       {showChangePassword && (
         <ChangePasswordModal user={user} onDone={() => setShowChangePassword(false)} forced={forcedPasswordChange && showChangePassword} />
@@ -14425,7 +13991,7 @@ function EmailViewer() {
             )}
             {canChangePassword && (
               <button
-                onClick={openChangePassword}
+                onClick={() => setShowChangePwd(true)}
                 className="flex items-center justify-center w-9 h-9 bg-indigo-600 text-white rounded-full transition-all active:scale-95 hover:bg-indigo-700"
                 title="Change password"
                 aria-label="Change password"
@@ -14497,7 +14063,7 @@ function EmailViewer() {
             </button>
             {canChangePassword && (
               <button
-                onClick={openChangePassword}
+                onClick={() => setShowChangePwd(true)}
                 className="flex items-center justify-center w-10 h-10 bg-indigo-600 text-white rounded-full transition-all active:scale-95 hover:bg-indigo-700 shadow-sm"
                 title="Change password"
                 aria-label="Change password"
@@ -14683,13 +14249,10 @@ function EmailViewer() {
         {showChangePwd && canChangePassword && (
           <motion.div
             key="cp-backdrop"
-             role="dialog"
-             aria-modal="true"
-             aria-labelledby="change-password-title"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
-            className="fixed inset-0 z-[11000] bg-slate-950/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
-            onClick={() => !cpBusy && closeChangePassword()}
+            className="fixed inset-0 z-[70] bg-slate-950/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+            onClick={() => !cpBusy && setShowChangePwd(false)}
           >
             <motion.div
               initial={{ y: 40, opacity: 0, scale: 0.98 }}
@@ -14706,12 +14269,12 @@ function EmailViewer() {
                     <KeyRound className="w-4.5 h-4.5 text-red-600" />
                   </div>
                   <div>
-                    <h3 id="change-password-title" className="text-base font-bold text-slate-900 leading-tight">Change password</h3>
+                    <h3 className="text-base font-bold text-slate-900 leading-tight">Change password</h3>
                     <p className="text-[11px] text-slate-500">Keep your account safe</p>
                   </div>
                 </div>
                 <button
-                  onClick={() => !cpBusy && closeChangePassword()}
+                  onClick={() => !cpBusy && setShowChangePwd(false)}
                   className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-500"
                   aria-label="Close"
                 >
@@ -14770,7 +14333,7 @@ function EmailViewer() {
                 <div className="flex items-center gap-2 pt-2">
                   <button
                     type="button"
-                    onClick={() => !cpBusy && closeChangePassword()}
+                    onClick={() => !cpBusy && setShowChangePwd(false)}
                     className="flex-1 h-11 rounded-xl border border-slate-200 text-slate-700 font-semibold text-sm hover:bg-slate-50"
                     disabled={cpBusy}
                   >Cancel</button>
@@ -15162,7 +14725,6 @@ export default function App() {
               <Route path="/admin/dashboard" element={<ProtectedRoute role="admin"><AdminPanel /></ProtectedRoute>} />
               <Route path="/admin/viewer" element={<AdminUserViewRoute><EmailViewer /></AdminUserViewRoute>} />
               <Route path="/viewer" element={<ProtectedRoute role="user"><EmailViewer /></ProtectedRoute>} />
-              <Route path="/developers" element={<DevelopersPage />} />
               <Route path="/guides/netflix-household-verification" element={<NetflixHouseholdVerificationGuide />} />
               <Route path="/guides/netflix-tv-activation" element={<NetflixTvActivationGuide />} />
               {/* Any URL that "looks like" a logout/clear intent runs the
@@ -15180,21 +14742,9 @@ export default function App() {
   );
 }
 
-
 function GlobalSessionOverlay() {
-  const { user: authUser, loading: authLoading } = useAuth();
+  const { user: authUser } = useAuth();
   const location = useLocation();
-  // Full-screen loaders (AppBootLoader) flag the body — pills must never float
-  // on top of a loading screen.
-  const [appLoading, setAppLoading] = useState(() => typeof document !== "undefined" && document.body.hasAttribute("data-app-loading"));
-  useEffect(() => {
-    const check = () => setAppLoading(document.body.hasAttribute("data-app-loading"));
-    check();
-    const observer = new MutationObserver(check);
-    observer.observe(document.body, { attributes: true, attributeFilter: ["data-app-loading"] });
-    return () => observer.disconnect();
-  }, []);
-
   const readSessionState = useCallback(() => {
     const token = sessionGet("session_token" as any);
     const storedUser = readStoredSessionUser();
@@ -15238,70 +14788,23 @@ function GlobalSessionOverlay() {
 
   useSessionTimeoutGuard(role, isLoggedIn && !isImpersonating && !isPendingAdmin);
 
-  if (authLoading || appLoading) return null;
   if (!isLoggedIn || isPendingAdmin) return null;
   if (typeof document === "undefined") return null;
+
   return createPortal(
-    <div className="global-session-pills contents">
+    <>
       {!isImpersonating && <SessionCountdown role={role} />}
       {role === "user" && <FreeExpiryPill userOverride={effectiveUser} />}
       {role === "user" && <PlanEndsPill userOverride={effectiveUser} />}
-    </div>,
+    </>,
     document.body
   );
 }
 
 
-/**
- * Full-screen branded loader used while auth/route state resolves.
- * Mirrors the index.html boot shell + login screen styling so the
- * transition from first paint to React is visually seamless.
- * While mounted it flags <body data-app-loading> so the floating
- * Session / Plan / Auto-delete pills stay hidden.
- */
-function AppBootLoader({ label = "Preparing your inbox" }: { label?: string }) {
-  useEffect(() => {
-    document.body.setAttribute("data-app-loading", "1");
-    return () => { document.body.removeAttribute("data-app-loading"); };
-  }, []);
-  return (
-    <main
-      aria-label="Loading"
-      aria-busy="true"
-      className="min-h-screen flex items-center justify-center px-6 bg-slate-950"
-      style={{
-        background:
-          "radial-gradient(circle at 50% 30%, rgba(220,38,38,0.22), transparent 32rem), linear-gradient(180deg,#020617 0%,#0b0f1e 50%,#020617 100%)",
-      }}
-    >
-      <section className="grid justify-items-center gap-6 text-center">
-        <div className="relative grid h-[88px] w-[88px] place-items-center">
-          <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-red-500 border-r-red-500/30 animate-spin" />
-          <div className="grid h-16 w-16 place-items-center rounded-[20px] bg-gradient-to-br from-red-500 to-red-700 text-3xl font-black text-white shadow-[0_20px_60px_rgba(220,38,38,0.45)] animate-pulse">
-            N
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">Netflix Mail</h1>
-          <p className="text-[13px] font-medium tracking-wide text-slate-500">{label}</p>
-        </div>
-        <div className="flex items-center gap-1.5">
-          {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              className="h-1.5 w-1.5 rounded-full bg-red-500 animate-bounce"
-              style={{ animationDelay: `${i * 0.15}s` }}
-            />
-          ))}
-        </div>
-      </section>
-    </main>
-  );
-}
-
 const ProtectedRoute = ({ children, role }: { children: React.ReactNode; role: "admin" | "user" }) => {
   const { user, loading } = useAuth();
-  if (loading) return <AppBootLoader />;
+  if (loading) return <div className="min-h-screen bg-slate-950 flex items-center justify-center"><div className="w-8 h-8 border-2 border-red-500 border-t-transparent rounded-full animate-spin" /></div>;
   if (!user) return <Navigate to={role === "admin" ? "/admin" : "/"} />;
   if (role === "user" && (user as any)?.impersonated === true && window.location.pathname === "/viewer") return <Navigate to="/admin/viewer" replace />;
   if (role === "user" && user.role === "admin") return <Navigate to="/admin/dashboard" replace />;
@@ -15312,10 +14815,9 @@ const ProtectedRoute = ({ children, role }: { children: React.ReactNode; role: "
 const AdminUserViewRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading } = useAuth();
   useSessionTimeoutGuard("user", false);
-  if (loading) return <AppBootLoader />;
+  if (loading) return <div className="min-h-screen bg-slate-950 flex items-center justify-center"><div className="w-8 h-8 border-2 border-red-500 border-t-transparent rounded-full animate-spin" /></div>;
   if (!user) return <Navigate to="/admin" replace />;
   if (user.role !== "user") return <Navigate to="/admin/dashboard" replace />;
   if ((user as any)?.impersonated !== true) return <Navigate to="/viewer" replace />;
   return <>{children}</>;
 };
-

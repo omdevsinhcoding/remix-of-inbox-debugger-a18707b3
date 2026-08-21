@@ -85,29 +85,25 @@ Deno.serve(async (req) => {
     const nowIso = new Date().toISOString();
 
     // ---- Etag pre-check ----
-    const [aggN, aggR] = clientEtag ? await Promise.all([
+    const [aggN, aggR] = await Promise.all([
       supabase
         .from("notifications")
-        .select("id, created_at, updated_at, sort_order, expires_at, publish_at")
+        .select("id, created_at, expires_at, publish_at")
         .or(`audience.eq.all,target_user_id.eq.${session.userId}`),
       supabase
         .from("notification_reads")
         .select("read_at, seen_at, deleted_at, snoozed_until, dismissed_at, archived_at")
         .eq("user_id", session.userId),
-    ]) : [{ data: null, error: null }, { data: null, error: null }];
+    ]);
     let etagStr: string | null = null;
-    if (clientEtag && !aggN.error && !aggR.error) {
+    if (!aggN.error && !aggR.error) {
       let cn = 0;
       let mxN = 0;
       for (const n of aggN.data || []) {
         if (n.expires_at && n.expires_at <= nowIso) continue;
         if (n.publish_at && n.publish_at > nowIso) continue;
         cn++;
-        const t = Math.max(
-          n.created_at ? new Date(n.created_at).getTime() : 0,
-          n.updated_at ? new Date(n.updated_at).getTime() : 0,
-          typeof n.sort_order === "number" ? n.sort_order : 0,
-        );
+        const t = n.created_at ? new Date(n.created_at).getTime() : 0;
         if (t > mxN) mxN = t;
       }
       let mxR = 0;
@@ -126,9 +122,8 @@ Deno.serve(async (req) => {
 
     const { data: notes, error: nErr } = await supabase
       .from("notifications")
-      .select("id, title, body, description, body_markdown, image_url, category, icon, platform_icon, kind, sub_kind, locked, show_frequency, mode, action_url, action_label, action2_url, action2_label, audience, target_user_id, created_at, updated_at, sort_order, expires_at, publish_at, group_key")
+      .select("id, title, body, description, body_markdown, image_url, category, priority, icon, platform_icon, kind, sub_kind, locked, show_frequency, mode, action_url, action_label, action2_url, action2_label, audience, target_user_id, created_at, expires_at, publish_at, group_key")
       .or(`audience.eq.all,target_user_id.eq.${session.userId}`)
-      .order("sort_order", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: false })
       .limit(100);
     if (nErr) return json({ success: false, error: nErr.message }, 500);
@@ -141,6 +136,7 @@ Deno.serve(async (req) => {
     const ids = active.map((n: any) => n.id);
     const readSet = new Set<string>();
     const seenSet = new Set<string>();
+    const deletedSet = new Set<string>();
     const snoozeMap = new Map<string, string>();
     if (ids.length) {
       const { data: reads } = await supabase
@@ -151,15 +147,16 @@ Deno.serve(async (req) => {
       for (const r of reads || []) {
         if (r.read_at) readSet.add(r.notification_id);
         if (r.seen_at) seenSet.add(r.notification_id);
+        if (r.deleted_at) deletedSet.add(r.notification_id);
         if (r.snoozed_until) snoozeMap.set(r.notification_id, r.snoozed_until);
       }
     }
-    // Legacy delete rows no longer suppress active admin/global notifications.
-    const payload = active.map((n: any) => ({
+    const payload = active
+      .filter((n: any) => !deletedSet.has(n.id))
+      .map((n: any) => ({
         id: n.id, title: n.title, body: n.body,
         description: n.description, body_markdown: n.body_markdown, image_url: n.image_url,
-        category: n.category, icon: n.icon,
-        sort_order: n.sort_order ?? null, updated_at: n.updated_at || null,
+        category: n.category, priority: n.priority, icon: n.icon,
         platform_icon: n.platform_icon, kind: n.kind, sub_kind: n.sub_kind,
         locked: !!n.locked, show_frequency: n.show_frequency, mode: n.mode,
         action_url: n.action_url, action_label: n.action_label,

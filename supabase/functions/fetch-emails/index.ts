@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { ImapFlow } from "npm:imapflow@1.4.3";
+import { ImapFlow } from "npm:imapflow@1.2.18";
 import { simpleParser } from "npm:mailparser@3.9.6";
 import { readRequest, maybeEncryptResponse, EncryptedRequestContext, PlaintextRejectedError, plaintextRejectedResponse, TransportError, transportErrorResponse } from "../_shared/crypto.ts";
 import { redactEmailsHtml, redactEmailsText } from "../_shared/redact.ts";
@@ -20,7 +20,7 @@ const ACCOUNT_UPDATE_RE = /(attention|action (needed|required)|account (informat
 
 // Netflix household / new-device / "is this you?" emails have no OTP, but
 // users must see them so they can press Netflix's verification button.
-const HOUSEHOLD_SIGNIN_RE = /(netflix household|your household|update your household|household (has been|was|is) (confirmed|updated)|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
+const HOUSEHOLD_SIGNIN_RE = /(netflix household|your household|update your household|household has been confirmed|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
 
 const SIGN_IN_CODE_SUBJECTS = [
   "enter this code", "sign-in code", "sign in to", "sign-in activity",
@@ -54,97 +54,40 @@ function extractOtpCode(subject: string, body: string): string | null {
 
 const FULL_SYNC_MAX_UIDS = 50;
 const USER_REFRESH_MAX_UIDS = 12;
-// A manual refresh publishes the newly delivered, still-missing Netflix mails
-// (any category: sign-in, household, promo, device alerts). It walks a bounded
-// window of newest UIDs so mail that landed between two refreshes is not lost.
-const QUICK_REFRESH_CANDIDATE_UIDS = 50;
-// How many already-cached UIDs a click refresh may walk past before it stops.
-const QUICK_REFRESH_SKIP_WINDOW = 100;
-// A click refresh publishes ALL newly delivered eligible messages per assigned
-// logical account (bounded only by QUICK_REFRESH_CANDIDATE_UIDS and the
-// per-account timeout). The old cap of 2 caused fresh household / device
-// mails to be dropped and only appear on the next cron cycle 5-7 min later.
-const QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT = 25;
-
-
-// A click refresh has one wall-clock budget, including TLS, mailbox selection,
-// and message fetch. Keep it below the browser's 12-second transport deadline.
-const PER_ACCOUNT_TIMEOUT_MS = 12000;
-const FAST_REFRESH_TIMEOUT_MS = 8000;
-const FAST_REFRESH_CONNECT_TIMEOUT_MS = 6500;
-// Manual refresh must cover a busy Gmail inbox without parsing unrelated mail.
-const FAST_REFRESH_SCAN_COUNT = 20;
+const PER_ACCOUNT_TIMEOUT_MS = 6500;
+const FAST_REFRESH_TIMEOUT_MS = 1800;
+const FAST_REFRESH_SCAN_COUNT = 4;
 const STALE_DAYS = 60;
 
 // ------- Durable job coordination (survives Deno isolate recycles) --------
 // Every knob below is a constant so ops can grep + tune in one place.
+const SYNC_JOB_NAME = "email-sync";
+const SYNC_LOCK_LEASE_SECONDS = 120;        // cron runs every 3min; 2min lease
 const STALE_CLEANUP_MIN_INTERVAL_MS = 6 * 60 * 60_000; // 6h floor per isolate
 const DEDUP_ID_LIMIT = 2000;                // keyset window, not offset
 
+// Try to grab the DB-backed lease. Returns false if another isolate holds it,
+// so overlapping cron ticks exit ~immediately (single SELECT to acquire fn).
+async function acquireLock(supabase: any, job: string, leaseSeconds: number): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc("acquire_sync_lock", {
+      _job: job, _lease_seconds: leaseSeconds,
+    });
+    if (error) { console.error(`[lock:${job}] rpc error`, error); return false; }
+    return data === true;
+  } catch (e) { console.error(`[lock:${job}] exception`, e); return false; }
+}
+async function releaseLock(supabase: any, job: string, ok: boolean): Promise<void> {
+  try { await supabase.rpc("release_sync_lock", { _job: job, _ok: ok }); }
+  catch (e) { console.error(`[lock:${job}] release failed`, e); }
+}
+
 const USER_SYNC_WINDOW_MS = 5_000;
 const userSyncHits = new Map<string, number>();
+let cronRepairLastAttempt = 0;
 
 type Session = { userId: string; username: string; role: "admin" | "user"; assignedAccounts?: string[] | null; exp?: number; impersonated?: boolean; adminId?: string | null };
 type Account = { label: string; host: string; port: number; user: string; password: string; recipientFilters?: string[] };
-
-function selectLogicalAccount(toRaw: string | null | undefined, accounts: Account[]): Account | null {
-  // Explicit recipient assignments always win over a catch-all account that
-  // points at the same physical IMAP inbox.
-  const explicit = accounts.find((acc) => (acc.recipientFilters || []).length > 0 && recipientMatches(toRaw, acc.recipientFilters));
-  if (explicit) return explicit;
-  return accounts.find((acc) => (acc.recipientFilters || []).length === 0 && recipientMatches(toRaw, [])) || null;
-}
-
-function envelopeRecipients(envelope: any): string {
-  const recipients = [
-    ...(Array.isArray(envelope?.to) ? envelope.to : []),
-    ...(Array.isArray(envelope?.cc) ? envelope.cc : []),
-  ];
-  return recipients
-    .map((recipient: any) => String(recipient?.address || "").trim())
-    .filter(Boolean)
-    .join(", ");
-}
-
-function headerValueText(value: unknown): string {
-  if (!value) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(headerValueText).filter(Boolean).join(", ");
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (typeof record.text === "string") return record.text;
-    if (Array.isArray(record.value)) {
-      return record.value
-        .map((entry: any) => entry?.address || entry?.text || "")
-        .filter(Boolean)
-        .join(", ");
-    }
-  }
-  return String(value);
-}
-
-function parsedRoutingRecipients(parsed: any, envelope: any): string {
-  const visible = [parsed?.to, parsed?.cc]
-    .flatMap((value: any) => Array.isArray(value) ? value : value ? [value] : [])
-    .map((value: any) => headerValueText(value))
-    .filter(Boolean);
-
-  // Shared Gmail inboxes often receive Netflix messages through BCC or an
-  // alias. In those messages `To` can contain the primary mailbox (or no useful
-  // address), while Gmail preserves the real destination in delivery headers.
-  // Include those headers before logical-account routing so a fresh message is
-  // assigned to the intended profile rather than the catch-all account.
-  const headers = parsed?.headers;
-  const delivered = ["delivered-to", "x-original-to", "x-google-original-to", "envelope-to"]
-    .map((name) => {
-      try { return headerValueText(headers?.get?.(name)); } catch { return ""; }
-    })
-    .filter(Boolean);
-
-  return Array.from(new Set([...delivered, ...visible, envelopeRecipients(envelope)]))
-    .filter(Boolean)
-    .join(", ");
-}
 
 function normalizeAccountLabels(raw: any, available: string[] = []): string[] {
   const allowed = Array.from(new Set(available.map((s) => String(s || "").trim()).filter(Boolean)));
@@ -314,20 +257,15 @@ async function getAssignedAccountFilter(supabase: any, session: Session | null):
 // ============================================================================
 const ACCOUNT_CHANGE_STRONG_RE = /(confirm (your )?(account change|email address change|change to your account|new email|phone (number )?change)|your (account (information|info|details)|email address|phone number|password) (was |has been |is )?(changed|updated|added|removed|reset)|(email address|phone number|password|payment method|payment info|billing info|account information) (was |has been )?(changed|updated|added|removed|reset|verified)|changes? to your account (was|has been|were) (made|updated)|make (a |any )?(change|changes) to your account|request to make a change|password (was |has been )?(changed|reset|updated)|(a )?new profile (was |has been )?(added|created)|profile (was |has been )?(added|created|removed|deleted|renamed|updated|modified)|(a )?profile (has been|was) (added|removed|deleted|renamed)|added a (new )?(phone|mobile|email|profile)|(mobile|phone) number (was |has been )?(added|updated|changed|removed|verified|confirmed)|membership (was |has been )?(cancell?ed|updated|paused|on hold|restarted|resumed|reactivated)|account (was |has been )?(cancell?ed|deleted|closed|paused|on hold|reactivated)|we[’']re sorry to see you go|payment (method|info|information) (was |has been )?(updated|changed|added|removed)|update your account (information|info|details)|action needed: (verify|update|confirm))/i;
 
-function classifyEmailForVisibility(e: any): "household" | "signin" | "password_reset" | "account_update" | "other" {
+function classifyEmailForVisibility(e: any): "signin" | "password_reset" | "account_update" | "other" {
   const subject = String(e?.subject || "");
   const preview = String(e?.preview || "");
   const combined = `${subject} ${preview}`;
-  // Household verification is an access/sign-in action, not an account-detail
-  // mutation. It must win over broad phrases such as "update your account".
-  if (HOUSEHOLD_SIGNIN_RE.test(combined)) return "household";
-  // HARD BLOCK (see banner above) — wins over OTP, but not household access.
+  // HARD BLOCK (see banner above) — always wins, even over OTP.
   if (ACCOUNT_CHANGE_STRONG_RE.test(combined)) return "account_update";
-  // Password reset/recovery messages frequently contain an OTP. Classify the
-  // purpose before the generic OTP rule so those codes never reach end users.
-  if (PASSWORD_RESET_SUBJECTS.some(kw => combined.toLowerCase().includes(kw))) return "password_reset";
-  if (e?.otp || SIGN_IN_CODE_SUBJECTS.some(kw => combined.toLowerCase().includes(kw)) || OTP_SUBJECT_HINT.test(subject) || OTP_BODY_CONTEXT.test(preview)) return "signin";
+  if (e?.otp || HOUSEHOLD_SIGNIN_RE.test(combined) || SIGN_IN_CODE_SUBJECTS.some(kw => combined.toLowerCase().includes(kw)) || OTP_SUBJECT_HINT.test(subject) || OTP_BODY_CONTEXT.test(preview)) return "signin";
   if (ACCOUNT_UPDATE_RE.test(combined)) return "account_update";
+  if (PASSWORD_RESET_SUBJECTS.some(kw => combined.toLowerCase().includes(kw))) return "password_reset";
   return "other";
 }
 
@@ -546,22 +484,17 @@ async function fetchFromAccount(
   imapPassword: string,
   accountLabel: string,
   cachedIds: Set<string>,
-  cachedMessageIds: Set<string>,
   maxMessages = FULL_SYNC_MAX_UIDS,
   quickRefresh = false,
   recipientFilters: string[] = [],
-  logicalAccounts: Account[] = [],
-): Promise<{ emails: any[]; fetched: number; skipped: number; recipientSkipped: number; timedOut: boolean }> {
+): Promise<{ emails: any[]; fetched: number; skipped: number; recipientSkipped: number }> {
   const emails: any[] = [];
   let skipped = 0;
   let recipientSkipped = 0;
   let timedOut = false;
-  let startedAt = Date.now();
+  const startedAt = Date.now();
   const budgetMs = quickRefresh ? FAST_REFRESH_TIMEOUT_MS : PER_ACCOUNT_TIMEOUT_MS;
-  const connectBudgetMs = quickRefresh ? FAST_REFRESH_CONNECT_TIMEOUT_MS : 8000;
-  let timer: number | undefined;
-  let connectTimer: number | undefined;
-  let closeInitiated = false;
+  const timer = setTimeout(() => { timedOut = true; }, budgetMs);
   const hasBudget = () => !timedOut && Date.now() - startedAt < budgetMs;
 
   const client = new ImapFlow({
@@ -570,194 +503,137 @@ async function fetchFromAccount(
     secure: true,
     auth: { user: imapUser, pass: imapPassword },
     logger: false,
-    connectionTimeout: connectBudgetMs,
-    // The explicit connect/scan budgets below are the user-facing deadline.
-    // Keep ImapFlow's inactivity watchdog above that deadline so it cannot
-    // abort a slow Gmail TLS greeting before our bounded timer does.
-    socketTimeout: quickRefresh ? 20000 : 30000,
-    greetingTimeout: quickRefresh ? 7000 : 8000,
+    socketTimeout: quickRefresh ? 1800 : 7000,
+    greetingTimeout: quickRefresh ? 1200 : 3000,
   });
 
-  const closeClient = () => {
-    if (closeInitiated || !(client as any).usable) return;
-    closeInitiated = true;
+  try {
+    await client.connect();
+    console.log(`[${accountLabel}] IMAP connected to ${imapHost}`);
+    const lock = await client.getMailboxLock("INBOX");
+
     try {
-      const closing: any = client.close();
-      if (closing && typeof closing.catch === "function") void closing.catch(() => {});
-    } catch {}
-  };
-
-  const accountVariants = logicalAccounts.length > 0
-    ? logicalAccounts
-    : [{ label: accountLabel, host: imapHost, port: imapPort, user: imapUser, password: imapPassword, recipientFilters }];
-
-  const scanMailbox = async (mailboxPath: string, idNamespace = "", allowIndexingGrace = false) => {
-    if (!hasBudget()) return;
-    const lock = await client.getMailboxLock(mailboxPath);
-    try {
-      // SELECT can return before Gmail publishes a just-delivered message's
-      // EXISTS update. Force one cheap round trip before reading the count so
-      // the first bounded tail scan includes the newest OTP/household message.
-      if (quickRefresh && allowIndexingGrace && hasBudget()) {
-        try { await client.noop(); } catch {}
-      }
-      const totalMessages = Number((client.mailbox as any)?.exists || 0);
-      if (totalMessages <= 0 || !hasBudget()) return;
-
-      const makeId = (label: string, uid: number) => `${label}:${idNamespace}${uid}`;
-      const isCached = (uid: number) => cachedIds.has(String(uid)) || accountVariants.some((acc) => cachedIds.has(makeId(acc.label, uid)));
       let netflixUids: number[] = [];
+      let newestUids: number[] = [];
+      const totalMessages = (client.mailbox as any)?.exists || 0;
 
-      // A Gmail SEARCH across All Mail can consume the complete 8-second manual
-      // refresh budget on large inboxes. For a click refresh, fetch one bounded
-      // tail of lightweight envelopes instead; this reaches newly delivered
-      // sign-in and household messages in one round trip and leaves the budget
-      // for downloading only genuinely new Netflix bodies.
-      if (quickRefresh && hasBudget()) {
-        // Keep this deliberately small. Fetching 100 envelopes from Gmail was
-        // consuming the complete 8-second budget before a brand-new sign-in
-        // or household message body could be downloaded. The latest mail is at
-        // the tail, so 20 envelopes is enough for an immediate click refresh;
-        // the deeper non-interactive sync still covers the wider history.
-        const tailCount = FAST_REFRESH_SCAN_COUNT;
-        const tailStart = Math.max(1, totalMessages - (tailCount - 1));
-        try {
-          for await (const message of client.fetch(`${tailStart}:*`, { envelope: true, uid: true })) {
-            if (!hasBudget()) break;
-            const fromAddresses = (message.envelope?.from || [])
-              .map((sender: any) => String(sender?.address || "").toLowerCase())
-              .filter(Boolean);
-            if (!fromAddresses.some((address: string) => /@([a-z0-9-]+\.)*netflix\.com$/.test(address))) continue;
-            const envelopeMessageId = String(message.envelope?.messageId || "").trim().toLowerCase();
-            // All Mail and INBOX use different UIDs for the same message. The
-            // Message-ID check prevents old cached mail from consuming body
-            // fetch time after switching mailbox paths.
-            if (isCached(message.uid) || (envelopeMessageId && cachedMessageIds.has(envelopeMessageId))) {
-              skipped++;
-              continue;
-            }
+      // Fast path: newly delivered OTP emails are almost always in the newest inbox rows.
+      // Fetching envelopes for the last few messages is much faster than a server-side IMAP search.
+      if (totalMessages > 0 && hasBudget()) {
+        const scanCount = quickRefresh ? FAST_REFRESH_SCAN_COUNT : 12;
+        const startSeq = Math.max(1, totalMessages - (scanCount - 1));
+        for await (const message of client.fetch(`${startSeq}:${totalMessages}`, { envelope: true, uid: true })) {
+          if (!hasBudget()) break;
+          newestUids.push(message.uid);
+          const fromAddr = message.envelope?.from?.[0]?.address?.toLowerCase() || "";
+          // STRICT: only accept @netflix.com senders (or subdomains). No subject/to matching —
+          // that let third-party threads like "Netflix wtf??" from Reddit slip through.
+          if (/@([a-z0-9-]+\.)*netflix\.com$/.test(fromAddr)) {
             netflixUids.push(message.uid);
           }
-        } catch (tailErr) {
-          console.log(`[${accountLabel}] ${mailboxPath} newest-envelope scan failed:`, tailErr);
         }
-      } else if (hasBudget()) {
+        if (netflixUids.length > 0) console.log(`[${accountLabel}] Latest inbox scan found ${netflixUids.length}`);
+      }
+
+      if (!quickRefresh && hasBudget()) {
         const since = new Date();
         since.setDate(since.getDate() - 7);
-        try {
-          const found = await client.search({ from: "netflix.com", since }, { uid: true });
-          if (Array.isArray(found) && found.length > 0) netflixUids.push(...found);
-        } catch (searchErr) {
-          console.log(`[${accountLabel}] ${mailboxPath} Netflix search failed:`, searchErr);
+        for (const term of ["netflix.com", "netflix"]) {
+          if (!hasBudget()) break;
+          try {
+            const searchResults = await client.search({ from: term, since }, { uid: true });
+            if (searchResults?.length > 0) {
+              netflixUids.push(...(searchResults as number[]));
+              console.log(`[${accountLabel}] Search "${term}" found ${netflixUids.length}`);
+              break;
+            }
+          } catch (searchErr) {
+            console.log(`[${accountLabel}] Search "${term}" failed:`, searchErr);
+          }
         }
       }
-      const candidates = Array.from(new Set(netflixUids)).sort((a, b) => b - a);
-      const scanLimit = quickRefresh ? Math.min(candidates.length, 250) : Math.min(Math.max(candidates.length, maxMessages * 3), 250);
-      const fetchLimit = quickRefresh ? QUICK_REFRESH_CANDIDATE_UIDS : clampLimit(maxMessages, USER_REFRESH_MAX_UIDS, FULL_SYNC_MAX_UIDS);
-      let uncachedUids: number[] = [];
-      for (const uid of candidates.slice(0, scanLimit)) {
-        if (isCached(uid)) {
-          skipped++;
-        } else {
-          uncachedUids.push(uid);
-        }
+
+      netflixUids = Array.from(new Set(netflixUids)).sort((a, b) => b - a);
+      newestUids = Array.from(new Set(newestUids)).sort((a, b) => b - a);
+      // Only ever process confirmed Netflix UIDs. Never fall back to newestUids —
+      // that fetched arbitrary third-party mail (Reddit, etc.) during quick refresh.
+      const candidates = netflixUids;
+      // Scan deeper than the final fetch limit. If the newest 50 Netflix UIDs
+      // are already cached, older missed UIDs would otherwise never backfill.
+      const scanLimit = quickRefresh ? USER_REFRESH_MAX_UIDS : Math.min(Math.max(candidates.length, maxMessages * 3), 250);
+      const uidsToCheck = candidates.slice(0, scanLimit);
+      const uncachedUids: number[] = [];
+      const fetchLimit = quickRefresh ? USER_REFRESH_MAX_UIDS : clampLimit(maxMessages, USER_REFRESH_MAX_UIDS, FULL_SYNC_MAX_UIDS);
+      for (const uid of uidsToCheck) {
+        const plainId = String(uid);
+        const prefixedId = `${accountLabel}:${uid}`;
+        if (cachedIds.has(plainId) || cachedIds.has(prefixedId)) skipped++;
+        else uncachedUids.push(uid);
         if (uncachedUids.length >= fetchLimit) break;
       }
-
-      const eligibleByAccount = new Map(accountVariants.map((acc) => [acc.label, 0]));
-      const allAccountQuotasFilled = () => accountVariants.every(
-        (acc) => (eligibleByAccount.get(acc.label) || 0) >= QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT,
-      );
+      console.log(`[${accountLabel}] Fetching ${uncachedUids.length} uncached candidate UIDs, ${skipped} already cached (${uidsToCheck.length}/${candidates.length} scanned)`);
 
       for (const uid of uncachedUids) {
-        if (!hasBudget() || (quickRefresh && allAccountQuotasFilled())) break;
+        if (!hasBudget()) {
+          console.log(`[${accountLabel}] Timed out, stopping fetch`);
+          break;
+        }
+
         try {
           const fullMsg = await client.fetchOne(uid, { source: true, envelope: true }, { uid: true });
-          if (!fullMsg || !fullMsg.source) continue;
+          if (!fullMsg?.source) continue;
+
           const parsed = await simpleParser(fullMsg.source, { skipImageLinks: true, skipTextLinks: true });
           const bodyText = (parsed.text || "").trim();
           const subjectText = (parsed.subject || fullMsg.envelope?.subject || "").toString();
           const fromText = parsed.from?.text || "";
-          if (!isNetflixFrom(fromText)) continue;
-          // Some Netflix household templates expose the recipient only in the
-          // IMAP envelope or Gmail delivery headers (BCC/aliases), while
-          // sign-in-code templates populate the parsed To header. Use all of
-          // them so recipient routing cannot discard or misassign fresh mail.
-          const toText = parsedRoutingRecipients(parsed, fullMsg.envelope) || undefined;
-          const matchedAccount = selectLogicalAccount(toText, accountVariants);
-          if (!matchedAccount) {
+          // Final gate — drop non-netflix senders. Promo/marketing mail is kept in cache
+          // and filtered at read-time based on the admin toggle.
+          if (!isNetflixFrom(fromText)) {
+            console.log(`[${accountLabel}] Skipping UID ${uid}: sender not @netflix.com (${fromText})`);
+            continue;
+          }
+          const toText = parsed.to ? (Array.isArray(parsed.to) ? parsed.to[0]?.text : parsed.to.text) : undefined;
+          if (!recipientMatches(toText, recipientFilters)) {
             recipientSkipped++;
+            console.log(`[${accountLabel}] Skipping UID ${uid}: recipient not allowed (${toText || "none"})`);
             continue;
           }
-          const messageId = String(parsed.messageId || "").trim().toLowerCase();
-          if (messageId && cachedMessageIds.has(messageId)) {
-            skipped++;
-            continue;
-          }
-          const email = {
-            id: makeId(matchedAccount.label, uid),
+          const otpCode = extractOtpCode(subjectText, bodyText);
+          const stableId = `${accountLabel}:${uid}`;
+
+          emails.push({
+            id: stableId,
             message_id: parsed.messageId || null,
             subject: parsed.subject || fullMsg.envelope?.subject || "",
             from: parsed.from?.text || "Netflix",
             to: toText,
             date: parsed.date || new Date(),
-            otp: extractOtpCode(subjectText, bodyText),
+            otp: otpCode,
             preview: redactEmailsText(bodyText.length > 100 ? `${bodyText.substring(0, 100)}...` : bodyText),
             html: redactEmailsHtml(parsed.html || parsed.textAsHtml || `<pre>${bodyText}</pre>`),
-            account_label: matchedAccount.label,
-          };
-          const visibility = classifyEmailForVisibility(email);
-          const eligibleForUser = visibility !== "password_reset" && visibility !== "account_update";
-          if (!quickRefresh || !eligibleForUser || (eligibleByAccount.get(matchedAccount.label) || 0) < QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT) {
-            emails.push(email);
-            if (messageId) cachedMessageIds.add(messageId);
-          }
-          if (eligibleForUser) eligibleByAccount.set(matchedAccount.label, (eligibleByAccount.get(matchedAccount.label) || 0) + 1);
+            account_label: accountLabel,
+          });
         } catch (parseErr) {
           const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
-          console.error(`[${accountLabel}] ${mailboxPath} fetch error UID ${uid}: ${errMsg}`);
+          console.error(`[${accountLabel}] Fetch error UID ${uid}: ${errMsg}`);
           if (/eof|closed|reset|tls|socket/i.test(errMsg)) break;
         }
       }
     } finally {
-      try { lock.release(); } catch {}
+      lock.release();
     }
-  };
-
-  try {
-    // ImapFlow bounds the handshake. The scan timer below uses only the time
-    // remaining in the same end-to-end budget instead of adding another 8s.
-    await client.connect();
-    console.log(`[${accountLabel}] IMAP connected to ${imapHost}`);
-    // Closing the socket is intentional: a boolean timeout cannot interrupt a
-    // hung IMAP SEARCH/FETCH, which was leaving the browser loading for minutes.
-    const remainingBudgetMs = Math.max(1, budgetMs - (Date.now() - startedAt));
-    timer = setTimeout(() => {
-      timedOut = true;
-      closeClient();
-    }, remainingBudgetMs) as unknown as number;
-
-    // INBOX is the latency-critical path for sign-in and household messages.
-    // Only fall back to Gmail All Mail when INBOX produced no new rows; doing
-    // both on every click consumed the fixed budget and made even OTPs late.
-    await scanMailbox("INBOX", "", true);
-    if (quickRefresh && emails.length === 0 && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
-      try {
-        await scanMailbox("[Gmail]/All Mail", "all:", false);
-      } catch (fallbackErr) {
-        if (!timedOut) console.log(`[${accountLabel}] Canonical All Mail fallback unavailable:`, fallbackErr);
-      }
-    }
-  } catch (err) {
-    if (!timedOut) throw err;
-    console.warn(`[${accountLabel}] IMAP refresh stopped at ${budgetMs}ms budget`);
   } finally {
-    if (connectTimer !== undefined) clearTimeout(connectTimer);
-    if (timer !== undefined) clearTimeout(timer);
-    closeClient();
+    clearTimeout(timer);
+    if (quickRefresh) {
+      try { (client as any).close?.(); } catch {}
+      try { client.logout().catch(() => {}); } catch {}
+    } else {
+      try { await client.logout(); } catch {}
+    }
   }
 
-  return { emails, fetched: emails.length, skipped, recipientSkipped, timedOut };
+  return { emails, fetched: emails.length, skipped, recipientSkipped };
 }
 
 async function loadAccounts(supabase: any, secret: string, accountLabels: string[] | null): Promise<Account[]> {
@@ -783,9 +659,8 @@ async function loadAccounts(supabase: any, secret: string, accountLabels: string
       if (accountLabels && accountLabels.length > 0) {
         requested = new Set(normalizeAccountLabels(accountLabels, availableLabels));
       }
-      const requestedLabels = requested;
-      const accountRows = requestedLabels
-        ? healedAccounts.filter((acc: any) => requestedLabels.has(String(acc.label || acc.user || "").trim()))
+      const accountRows = requested
+        ? healedAccounts.filter((acc: any) => requested.has(String(acc.label || acc.user || "").trim()))
         : healedAccounts;
       const decrypted = await Promise.all(accountRows.map(async (acc: any) => {
         if (!acc.user || !acc.password) return null;
@@ -814,10 +689,23 @@ async function loadAccounts(supabase: any, secret: string, accountLabels: string
 
 async function runSync(supabase: any, secret: string, source: string, accountLabels: string[] | null, maxMessages = FULL_SYNC_MAX_UIDS) {
   console.log(`[sync] Starting parallel IMAP sync (source: ${source})`);
-  // User-clicked refresh gets the newest-envelope fast path. Full/admin syncs
-  // retain the deeper seven-day search. Both paths still use simpleParser, so
-  // the stored Netflix HTML remains identical.
-  const quickRefresh = source === "user_refresh" || source === "user_refresh_direct";
+  // Keep output identical to the old working fetch-emails implementation:
+  // every refresh uses mailparser/simpleParser so Netflix HTML is cached and displayed as-is.
+  const quickRefresh = false;
+
+  // ---- Durable coordination: only ONE isolate does the heavy lift per cron tick.
+  // Was: in-memory __legacyBackfillDone/__lastStaleCleanupAt — useless because
+  // Deno isolates recycle every ~15s. Now stored in sync_state so overlapping
+  // ticks (or two accidental cron entries) exit ~free instead of double-scanning.
+  const cronLike = source === "cron" || source === "worker-cron" || source === "cron-warm";
+  if (cronLike) {
+    const got = await acquireLock(supabase, SYNC_JOB_NAME, SYNC_LOCK_LEASE_SECONDS);
+    if (!got) {
+      console.log("[sync] another run holds the lock; exiting");
+      return { success: true, skipped: "locked", stats: {}, totalFetched: 0, inserted: 0, emails: [] };
+    }
+  }
+  let syncOk = true;
 
   try {
     const accounts = await loadAccounts(supabase, secret, accountLabels);
@@ -836,34 +724,18 @@ async function runSync(supabase: any, secret: string, source: string, accountLab
     dedupCutoff.setDate(dedupCutoff.getDate() - STALE_DAYS);
     const { data: cachedRows } = await supabase
       .from("cached_emails")
-      .select("id, message_id")
+      .select("id")
       .eq("destroyed", false)
       .gte("date", dedupCutoff.toISOString())
       .order("date", { ascending: false })
       .order("id", { ascending: false })
       .limit(DEDUP_ID_LIMIT);
-    const cachedIds = new Set<string>((cachedRows || []).map((r: any) => String(r.id)));
-    const cachedMessageIds = new Set<string>(
-      (cachedRows || []).map((r: any) => String(r.message_id || "").trim().toLowerCase()).filter(Boolean),
-    );
+    const cachedIds = new Set((cachedRows || []).map((r: any) => String(r.id)));
 
-    // Several logical accounts may share one Gmail inbox. Opening one parallel
-    // IMAP connection per logical label caused socket timeouts and let whichever
-    // label finished first own the UID. Fetch each physical inbox once, then
-    // route every message to the matching logical account by recipient.
-    const physicalGroups = Array.from(accounts.reduce((groups, acc) => {
-      const key = `${acc.host}\u0000${acc.port}\u0000${acc.user}\u0000${acc.password}`;
-      const group = groups.get(key) || [];
-      group.push(acc);
-      groups.set(key, group);
-      return groups;
-    }, new Map<string, Account[]>()).values());
-
-    const settled = await Promise.allSettled(physicalGroups.map(async (group) => {
-      const primary = group[0];
-      console.log(`[sync] Fetching ${group.map((acc) => acc.label).join(", ")} (${primary.user})`);
-      const result = await fetchFromAccount(primary.host, primary.port, primary.user, primary.password, primary.label, cachedIds, cachedMessageIds, maxMessages, quickRefresh, [], group);
-      return { group, result };
+    const settled = await Promise.allSettled(accounts.map(async (acc) => {
+      console.log(`[sync] Fetching ${acc.label} (${acc.user})`);
+      const result = await fetchFromAccount(acc.host, acc.port, acc.user, acc.password, acc.label, cachedIds, maxMessages, quickRefresh, acc.recipientFilters || []);
+      return { acc, result };
     }));
 
     const allEmails: any[] = [];
@@ -871,39 +743,27 @@ async function runSync(supabase: any, secret: string, source: string, accountLab
     const syncStats: Record<string, { fetched: number; skipped: number; recipientSkipped?: number; error?: string }> = {};
 
     settled.forEach((item, index) => {
-      const group = physicalGroups[index] || [];
-      const label = group.map((acc) => acc.label).join(", ") || `Account ${index + 1}`;
+      const label = accounts[index]?.label || `Account ${index + 1}`;
       if (item.status === "fulfilled") {
-        for (const acc of group) {
-          const fetched = item.value.result.emails.filter((email: any) => email.account_label === acc.label).length;
-          syncStats[acc.label] = {
-            fetched,
-            skipped: item.value.result.skipped,
-            recipientSkipped: item.value.result.recipientSkipped,
-            ...(item.value.result.timedOut ? { error: "Mail check reached its time limit; partial results were saved" } : {}),
-          };
-        }
+        syncStats[label] = { fetched: item.value.result.fetched, skipped: item.value.result.skipped, recipientSkipped: item.value.result.recipientSkipped };
         allEmails.push(...item.value.result.emails);
       } else {
         const errMsg = item.reason instanceof Error ? item.reason.message : String(item.reason);
         const isAuthError = /auth|login|invalid credentials|authenticationfailed/i.test(errMsg);
         const errorText = isAuthError ? `IMAP login failed for "${label}". Check email and app password.` : `Failed to connect to "${label}": ${errMsg}`;
-        for (const acc of group) syncStats[acc.label] = { fetched: 0, skipped: 0, error: errorText };
+        syncStats[label] = { fetched: 0, skipped: 0, error: errorText };
         accountErrors.push({ label, error: errorText });
       }
     });
 
-    if (accountErrors.length > 0 && accountErrors.length === physicalGroups.length) {
+    if (accountErrors.length > 0 && accountErrors.length === accounts.length) {
       const combinedMsg = accountErrors.map(e => e.error).join(" | ");
       console.error("[sync] All accounts failed:", combinedMsg);
+      syncOk = false;
       return { success: false, error: combinedMsg, stats: syncStats, totalFetched: 0, inserted: 0 };
     }
 
     allEmails.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    // fetchFromAccount already enforces two eligible rows per logical account.
-    // Do not apply a second global cap: it would let the busiest inbox crowd out
-    // the other accounts assigned to the same profile.
-
 
     let inserted = 0;
     if (allEmails.length > 0) {
@@ -925,27 +785,23 @@ async function runSync(supabase: any, secret: string, source: string, accountLab
       const { error: upsertErr } = await supabase
         .from("cached_emails")
         .upsert(rows, { onConflict: "id", ignoreDuplicates: true });
-      if (upsertErr) {
-        console.error("[sync] Cache upsert error:", upsertErr);
-        return { success: false, error: upsertErr.message, stats: syncStats, totalFetched: allEmails.length, inserted: 0 };
-      }
+      if (upsertErr) { syncOk = false; console.error("[sync] Cache upsert error:", upsertErr); }
       inserted = rows.length;
     }
 
-    // Never run retention cleanup in the user-click refresh path. Deleting old
-    // rows is maintenance work and must not delay delivery of the newest mail.
-    if (!quickRefresh) {
-      const nowMs = Date.now();
-      const last = (globalThis as any).__lastStaleCleanupAt || 0;
-      if (nowMs - last >= STALE_CLEANUP_MIN_INTERVAL_MS) {
-        (globalThis as any).__lastStaleCleanupAt = nowMs;
-        const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - STALE_DAYS);
-        const { error: delErr } = await supabase
-          .from("cached_emails").delete()
-          .lt("date", cutoff.toISOString()).eq("destroyed", false);
-        if (delErr) console.error("[sync] Stale cleanup error:", delErr);
-      }
+    // Stale cleanup: authoritative path is the daily `email-cleanup` pg_cron
+    // job. This inline fallback fires at most once per 6h per warm isolate —
+    // just a safety net if the cron slot is disabled.
+    const nowMs = Date.now();
+    const last = (globalThis as any).__lastStaleCleanupAt || 0;
+    if (nowMs - last >= STALE_CLEANUP_MIN_INTERVAL_MS) {
+      (globalThis as any).__lastStaleCleanupAt = nowMs;
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - STALE_DAYS);
+      const { error: delErr } = await supabase
+        .from("cached_emails").delete()
+        .lt("date", cutoff.toISOString()).eq("destroyed", false);
+      if (delErr) console.error("[sync] Stale cleanup error:", delErr);
     }
 
     const response: any = {
@@ -961,16 +817,40 @@ async function runSync(supabase: any, secret: string, source: string, accountLab
       .filter(([, v]: any) => Number(v.recipientSkipped || 0) > 0)
       .map(([label, v]: any) => `${label}: ${v.recipientSkipped} Netflix email skipped by recipient filter`);
     if (recipientWarnings.length > 0) response.warnings = [...(response.warnings || []), ...recipientWarnings];
-    const timeoutWarnings = Object.entries(syncStats)
-      .filter(([, v]: any) => /time limit/i.test(String(v.error || "")))
-      .map(([label]) => `${label}: mail check reached its time limit; partial results were saved`);
-    if (timeoutWarnings.length > 0) response.warnings = [...(response.warnings || []), ...timeoutWarnings];
     if (Array.isArray(response.warnings) && response.warnings.length > 0) response.warning = response.warnings.join(" • ");
     console.log(`[sync] Complete: ${allEmails.length} fetched/upserted across ${accounts.length} account(s)`);
     return response;
   } catch (e) {
+    syncOk = false;
     console.error("[sync] fatal", e);
     return { success: false, error: e instanceof Error ? e.message : String(e), stats: {}, totalFetched: 0, inserted: 0 };
+  } finally {
+    if (cronLike) await releaseLock(supabase, SYNC_JOB_NAME, syncOk);
+  }
+}
+
+async function repairCronScheduleIfNeeded(supabase: any, cronSecret: string) {
+  if (!cronSecret || Date.now() - cronRepairLastAttempt < 10 * 60_000) return;
+  cronRepairLastAttempt = Date.now();
+  try {
+    const { data: cfg } = await readSettingRow(supabase, "cron_config");
+    const interval = Math.max(1, Math.min(10, parseInt(String(cfg?.value?.interval || "1")) || 1));
+    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+    try { await supabase.rpc("unschedule_email_sync"); } catch {}
+    const { error } = await supabase.rpc("schedule_email_sync", {
+      cron_expr: `*/${interval} * * * *`,
+      function_url: `${SUPABASE_URL}/functions/v1/fetch-emails`,
+      auth_key: cronSecret,
+    });
+    if (error) throw error;
+    // Only upsert when the stored value actually differs (avoid churn on every cron repair)
+    const prev = cfg?.value || {};
+    if (prev.active !== true || prev.interval !== interval) {
+      await supabase.from("app_settings").upsert({ key: "cron_config", value: { active: true, interval } }, { onConflict: "key" });
+      console.log(`[cron] Repaired schedule with secret header at */${interval} minute(s)`);
+    }
+  } catch (err) {
+    console.error("[cron] Repair failed:", err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -988,8 +868,10 @@ Deno.serve(async (originalReq) => {
   const secFetchSiteForTransport = originalReq.headers.get("sec-fetch-site") || "";
   const hasValidCronSecret = !!CRON_SHARED_SECRET_FOR_TRANSPORT && cronHeaderForTransport === CRON_SHARED_SECRET_FOR_TRANSPORT;
   const hasServiceRoleBearer = !!SERVICE_ROLE_FOR_TRANSPORT && authHeaderForTransport === `Bearer ${SERVICE_ROLE_FOR_TRANSPORT}`;
-  // Trusted server proxies may send plaintext transport; scheduled sources are
-  // still rejected explicitly below because email ingestion is manual-only.
+  // Legacy pg_cron jobs in this project were created with the anon bearer but
+  // without x-cron-secret, so encrypted transport rejected them with 426 before
+  // the sync code ran. Accept only server-side plaintext here; the action gate
+  // below restricts it to mode=sync/source=cron and strips email contents.
   const hasServerSideBearer = /^Bearer\s+\S+/i.test(authHeaderForTransport) && !secFetchSiteForTransport && originalReq.method === "POST";
   const serverLikeSessionProxy = !!sessionTokenForTransport && !secFetchSiteForTransport;
   const allowServerPlaintext = hasValidCronSecret || hasServiceRoleBearer || hasServerSideBearer || serverLikeSessionProxy;
@@ -1048,29 +930,44 @@ Deno.serve(async (originalReq) => {
     }
 
 
-    // Service-role callers are trusted server-to-server maintenance clients.
-    // Scheduled sources are still rejected below, so this does not re-enable
-    // automatic syncing; it only permits explicit manual/probe sync requests.
-    const isCron = isCronSecret || hasServiceRoleBearer;
-
-    // Email ingestion is intentionally user-driven. Reject every scheduled
-    // source even if an old Cloudflare/Supabase schedule still calls us.
-    if (["cron", "worker-cron", "cron-warm"].includes(source)) {
-      return json({ success: false, error: "Automatic email sync is disabled; use manual refresh" }, 403);
-    }
+    const isLegacyPgCron = !session && !isCronSecret && hasServerSideBearer && mode === "sync" && source === "cron";
+    const isCron = isCronSecret || isLegacyPgCron;
+    if (isLegacyPgCron) repairCronScheduleIfNeeded(supabase, CRON_SHARED_SECRET).catch(() => {});
 
     if (mode === "cron_status") {
       if (!session || session.role !== "admin") return json({ success: false, error: "Admin session required" }, 401);
-      return json({ active: false, schedule: "", interval: 0, lastSync: null });
+      try {
+        const { data, error } = await supabase.rpc("get_cron_status");
+        if (error) throw error;
+        return json(data);
+      } catch {
+        const { data: fallback } = await supabase.from("app_settings").select("value").eq("key", "cron_config").single();
+        return json({ active: fallback?.value?.active || false, interval: fallback?.value?.interval || 3, lastSync: null });
+      }
     }
 
     if (mode === "cron_toggle") {
       if (!session || session.role !== "admin") return json({ success: false, error: "Admin session required" }, 401);
+      const enabled = body.enabled === true;
+      const interval = parseInt(body.interval) || 3;
+      const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+      const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") || "";
+      if (!ANON_KEY) return json({ success: false, error: "SUPABASE_ANON_KEY is not configured" }, 500);
+      if (!CRON_SHARED_SECRET) return json({ success: false, error: "CRON_SHARED_SECRET is not configured" }, 500);
+
       try {
         try { await supabase.rpc("unschedule_email_sync"); } catch {}
-        await supabase.from("app_settings").upsert({ key: "cron_config", value: { active: false, interval: 0 } }, { onConflict: "key" });
-        invalidateSetting("cron_config");
-        return json({ success: true, active: false, interval: 0, message: "Automatic email sync is disabled" });
+        if (enabled) {
+          const cronExpr = `*/${interval} * * * *`;
+          const { error: schedErr } = await supabase.rpc("schedule_email_sync", {
+            cron_expr: cronExpr,
+            function_url: `${SUPABASE_URL}/functions/v1/fetch-emails`,
+            auth_key: CRON_SHARED_SECRET,
+          });
+          if (schedErr) throw schedErr;
+        }
+        await supabase.from("app_settings").upsert({ key: "cron_config", value: { active: enabled, interval } }, { onConflict: "key" });
+        return json({ success: true, active: enabled, interval });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[cron] Toggle error:", msg);

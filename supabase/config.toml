@@ -1,4 +1,1 @@
 project_id = "jsqchutnfdeljajkxmly"
-
-[functions.tv-runner-job]
-verify_jwt = false

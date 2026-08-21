@@ -33,17 +33,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-session-token, x-pending-token, x-client-ip, x-crypto-session, x-accept-encoding, x-cron-secret",
 };
 
-// Strict UUID guard. Used before any id is interpolated into a PostgREST
-// filter string (e.g. `.or("target_user_id.eq.<id>")`) so a malformed value can
-// never widen a query's scope.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function assertUuid(value: unknown, label = "id"): string {
-  if (typeof value !== "string" || !UUID_RE.test(value)) throw new Error(`invalid ${label}`);
-  return value;
-}
-
-
-
 // Warm-instance memo for bootstrap_public. Deno edge instances stay warm for
 // ~15 min; 10-second TTL means at 5k concurrent users we serve most calls from
 // this in-memory cache, dropping DB reads + egress on the public bootstrap
@@ -203,22 +192,21 @@ const VIS_ACCOUNT_CHANGE_STRONG_RE = /(confirm (your )?(account change|email add
 
 // Netflix household / new-device / "is this you?" emails — link-based (no OTP)
 // but MUST reach the user so they can complete verification.
-const VIS_HOUSEHOLD_RE = /(netflix household|your household|update your household|household (has been|was|is) (confirmed|updated)|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
+const VIS_HOUSEHOLD_RE = /(netflix household|your household|update your household|household has been confirmed|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
 
-function emailVisibilityCategory(row: any): "household" | "signin" | "password_reset" | "account_update" | "other" {
+function emailVisibilityCategory(row: any): "signin" | "password_reset" | "account_update" | "other" {
   const subject = String(row?.subject || "");
   const preview = String(row?.preview || "");
   const combined = `${subject} ${preview}`;
-  // 1. Household verification is an access/sign-in action. It must outrank
-  //    broad account-update wording such as "update your account".
-  if (VIS_HOUSEHOLD_RE.test(combined)) return "household";
-  // 2. HARD-BLOCK zone (see banner above): any Netflix account-modification mail
+  // 1. HARD-BLOCK zone (see banner above): any Netflix account-modification mail
   //    is classified as account_update and later hard-hidden from users. This
   //    runs BEFORE the OTP shortcut so "Confirm your account change with this
   //    code: XXXXXX" is caught even though it contains a 6-digit code.
   if (VIS_ACCOUNT_CHANGE_STRONG_RE.test(combined)) return "account_update";
-  // 3. Emails with an OTP (not account-change) are sign-in / household-verify.
+  // 2. Emails with an OTP (not account-change) are sign-in / household-verify.
   if (row?.otp) return "signin";
+  // 3. Household / new-device / "is this you?" emails (link-based, no OTP).
+  if (VIS_HOUSEHOLD_RE.test(combined)) return "signin";
   // 4. Sign-in / new-device / temporary-access-code copy without an OTP field.
   if (VIS_SIGNIN_RE.test(combined)) return "signin";
   // 5. Broader account-update surface (membership paused, payment failed, etc.).
@@ -229,20 +217,18 @@ function emailVisibilityCategory(row: any): "household" | "signin" | "password_r
 
 function shouldExposeEmailToUser(row: any, filters: EmailVisibilityFilters, _isFree: boolean) {
   const hideSignin = filters.showSignInCodes === false;
+  const hideReset = filters.showPasswordResets === false;
   const category = emailVisibilityCategory(row);
-  // Only two categories are hidden from users:
-  //   1. account_update — Netflix account-change mails (email/phone/payment change, membership cancel)
-  //   2. password_reset — password reset / recovery mails
-  // Everything else (household approval, sign-in codes, promotional, signup
-  // "Finish Signing Up" welcome mails, and any uncategorized "other") is
-  // ALWAYS shown to the user. The showSignInCodes admin toggle can still
-  // hide sign-in-code mails if the admin explicitly turns it off.
+  // ⚠️ HARD BLOCK — account-change mails are NEVER shown to users, regardless
+  //    of any admin toggle. See banner above. DO NOT wire this to a filter.
   if (category === "account_update") return false;
+  // Password-reset mails are also account-modification signals — same rule.
   if (category === "password_reset") return false;
   if (hideSignin && category === "signin") return false;
+  // "other" (uncategorized) is hidden when reset is hidden — conservative default.
+  if (hideReset && category === "other") return false;
   return true;
 }
-
 
 
 // --- Crypto helpers ---
@@ -987,12 +973,6 @@ function postTelegramBg(tg: { botToken: string; chatId: string }, payload: Recor
   if (typeof wu === "function") wu(p); else void p;
 }
 
-function runInBackground(task: Promise<unknown>) {
-  const guarded = task.catch((e) => console.error("[background task] failed:", e));
-  const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
-  if (typeof waitUntil === "function") waitUntil(guarded); else void guarded;
-}
-
 // --- Multi-provider IP geolocation (parallel, timeout-guarded) with VPN/proxy detection ---
 type LocResult = {
   provider: string;
@@ -1217,35 +1197,21 @@ function sanitizeClientGeo(input: unknown): ClientGeoPayload | null {
   const granted = status === "granted"
     && Number.isFinite(latitude) && latitude >= -90 && latitude <= 90
     && Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
-  // Bound every client-controlled numeric so a hostile payload cannot produce
-  // NaN/Infinity/absurd values that break formatting or DB inserts downstream.
-  const rawTs = Number(raw.timestamp);
-  const now = Date.now();
-  // Login telemetry must describe this login, not a replayed day-old position.
-  // Some Android Chromium/WebView builds return a monotonic or clock-skewed
-  // GeolocationPosition.timestamp even with fresh, valid coordinates. The
-  // encrypted transport already rejects replayed request nonces, so stamp a
-  // granted fix at server receipt time when the browser timestamp is unusable.
-  const tsValid = Number.isFinite(rawTs) && rawTs > now - 300_000 && rawTs < now + 60_000;
-  const bounded = (v: unknown, min: number, max: number): number | null => {
-    const n = Number(v);
-    return typeof v === "number" && Number.isFinite(n) && n >= min && n <= max ? n : null;
-  };
   return {
     status: granted ? "granted" : status,
     permissionState: typeof raw.permissionState === "string" ? raw.permissionState.slice(0, 24) : undefined,
     latitude: granted ? latitude : undefined,
     longitude: granted ? longitude : undefined,
-    accuracy: Number.isFinite(accuracy) && accuracy >= 0 ? Math.min(1_000_000, Math.round(accuracy)) : undefined,
-    altitude: bounded(raw.altitude, -12_000, 100_000),
-    heading: bounded(raw.heading, 0, 360),
-    speed: bounded(raw.speed, 0, 100_000),
-    timestamp: granted ? (tsValid ? rawTs : now) : undefined,
+    accuracy: Number.isFinite(accuracy) && accuracy >= 0 ? Math.round(accuracy) : undefined,
+    altitude: typeof raw.altitude === "number" && Number.isFinite(raw.altitude) ? raw.altitude : null,
+    heading: typeof raw.heading === "number" && Number.isFinite(raw.heading) ? raw.heading : null,
+    speed: typeof raw.speed === "number" && Number.isFinite(raw.speed) ? raw.speed : null,
+    timestamp: typeof raw.timestamp === "number" && Number.isFinite(raw.timestamp) ? raw.timestamp : undefined,
     error: typeof raw.error === "string" ? raw.error.slice(0, 180) : undefined,
     publicIp: isRealPublicClientIp(publicIp) ? publicIp : undefined,
+    publicIpSource: isRealPublicClientIp(publicIp) ? "browser-ipwho.is" : undefined,
     device: sanitizeDevice((raw as any).device),
   };
-
 }
 
 function fetchWithTimeout(url: string, ms: number, init?: RequestInit): Promise<Response> {
@@ -1279,6 +1245,59 @@ async function providerIpapiCo(ip: string): Promise<LocResult | null> {
       isp: d.org, org: d.org, asn: d.asn,
       timezone: d.timezone,
       flag: countryToFlag(d.country_code),
+    };
+  } catch { return null; }
+}
+
+async function providerIpApiCom(ip: string): Promise<LocResult | null> {
+  try {
+    if (!ip || ip === "unknown" || isPrivateIp(ip) || isCloudflareIp(ip) || isKnownEdgeIp(ip)) return null;
+    // include proxy/hosting/mobile flags for VPN detection
+    const r = await fetchWithTimeout(
+      `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query,proxy,hosting,mobile`,
+      2500,
+    );
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d?.status !== "success") return null;
+    return {
+      provider: "ip-api.com",
+      ip: d.query,
+      country: d.country, countryCode: d.countryCode,
+      region: d.regionName || d.region, city: d.city, postal: d.zip,
+      lat: typeof d.lat === "number" ? d.lat : undefined,
+      lng: typeof d.lon === "number" ? d.lon : undefined,
+      isp: d.isp, org: d.org, asn: d.as,
+      timezone: d.timezone,
+      flag: countryToFlag(d.countryCode),
+      proxy: d.proxy === true,
+      hosting: d.hosting === true,
+    };
+  } catch { return null; }
+}
+
+async function providerIpwhoIs(ip: string): Promise<LocResult | null> {
+  try {
+    // NEVER call ipwho.is without an IP — it would geolocate the CALLER (Supabase edge = Portland).
+    if (!ip || ip === "unknown" || isPrivateIp(ip) || isCloudflareIp(ip) || isKnownEdgeIp(ip)) return null;
+    const url = `https://ipwho.is/${encodeURIComponent(ip)}`;
+    console.log("[ipwho.is] Request:", url);
+    const r = await fetchWithTimeout(url, 2500);
+    if (!r.ok) return null;
+    const d = await r.json();
+    console.log("[ipwho.is] Response:", JSON.stringify({ ip: d.ip, country: d.country, city: d.city, isp: d.connection?.isp, org: d.connection?.org }));
+    if (!d?.success) return null;
+    return {
+      provider: "ipwho.is",
+      ip: d.ip,
+      country: d.country, countryCode: d.country_code,
+      region: d.region, city: d.city, postal: d.postal,
+      lat: typeof d.latitude === "number" ? d.latitude : undefined,
+      lng: typeof d.longitude === "number" ? d.longitude : undefined,
+      isp: d.connection?.isp, org: d.connection?.org,
+      asn: d.connection?.asn ? `AS${d.connection.asn}` : undefined,
+      timezone: d.timezone?.id,
+      flag: d.flag?.emoji || countryToFlag(d.country_code),
     };
   } catch { return null; }
 }
@@ -1420,10 +1439,13 @@ function isInfraResponse(r: LocResult): boolean {
   return false;
 }
 
-async function resolveLocation(ip: string): Promise<{
+async function resolveLocation(ip: string, opts?: { allowIpwho?: boolean }): Promise<{
   merged: LocResult; confidence: "high" | "medium" | "low"; agreed: number; results: LocResult[];
   anonymizer: { proxy: boolean; vpn: boolean; tor: boolean; hosting: boolean; type?: string; provider?: string } | null;
 }> {
+  // Fail closed: ipwho.is must be explicitly enabled by admin.
+  const allowIpwho = opts?.allowIpwho === true;
+
   // HARD GUARD: never call geo providers without a real, public, non-CF client IP.
   // Otherwise every provider falls back to the CALLER (Supabase edge = Portland, OR).
   if (!ip || ip === "unknown" || isPrivateIp(ip) || isCloudflareIp(ip) || isKnownEdgeIp(ip)) {
@@ -1433,9 +1455,11 @@ async function resolveLocation(ip: string): Promise<{
 
   const providers: Array<Promise<LocResult | null>> = [
     providerIpapiCo(ip),
+    providerIpApiCom(ip),
     providerIpinfoIo(ip),
     providerFreeIpApi(ip),
   ];
+  if (allowIpwho) providers.push(providerIpwhoIs(ip));
   const [settled, anonymizer] = await Promise.all([
     Promise.allSettled(providers),
     detectAnonymizer(ip),
@@ -1457,7 +1481,7 @@ async function resolveLocation(ip: string): Promise<{
     if (!buckets.has(k)) buckets.set(k, []);
     buckets.get(k)!.push(r);
   }
-  const priority = ["ipapi.co", "ipinfo.io", "freeipapi.com"];
+  const priority = ["ipapi.co", "ip-api.com", "ipinfo.io", "ipwho.is", "freeipapi.com"];
   let bestBucket: LocResult[] = [];
   let bestSize = 0;
   for (const bucket of buckets.values()) {
@@ -1631,6 +1655,10 @@ async function sendPrimaryLoginAlert(
     ? `✅ <b>LOGIN SUCCESS</b>`
     : `❌ <b>LOGIN FAILED</b>`;
   const roleBadge = role === "admin" ? "👑 ADMIN" : "👤 USER";
+  const gpsBadge = isGps ? "🎯 <b>GPS LOCKED</b>" : "📡 <b>IP APPROX</b>";
+  const trustBadge = isGps
+    ? `🟢 <b>TRUSTED</b> · GPS ±${esc(String(clientGeo?.accuracy || "?"))}m`
+    : (isAnon ? `🔴 <b>MASKED</b> · ${anonBadge}` : `🟡 <b>NETWORK ONLY</b>`);
   const cityLine = [loc.city, loc.region, loc.country].filter(Boolean).join(", ") || "Unknown";
   const coordsLine = (typeof mapLat === "number" && typeof mapLng === "number")
     ? `<code>${mapLat.toFixed(6)}, ${mapLng.toFixed(6)}</code>` : "<code>—</code>";
@@ -1640,32 +1668,10 @@ async function sendPrimaryLoginAlert(
     ? `🟢  <b>SIGN-IN SUCCESS</b>`
     : `🔴  <b>SIGN-IN BLOCKED</b>`;
   const roleChip = role === "admin" ? "👑 Admin" : "👤 Member";
-  // GPS coords are client-supplied, so cross-check them against the IP-derived
-  // position. A large gap means the "GPS lock" cannot be trusted at face value
-  // (spoofed coords, or a VPN/relay on the network side).
-  const gpsIpKm = (isGps && typeof gpsLat === "number" && typeof gpsLng === "number"
-    && typeof ipLoc.lat === "number" && typeof ipLoc.lng === "number")
-    ? haversineKm({ lat: ipLoc.lat, lng: ipLoc.lng }, { lat: gpsLat, lng: gpsLng })
-    : null;
-  const gpsIpFar = typeof gpsIpKm === "number" && gpsIpKm > 500;
-  // Browser GPS is client-reported telemetry, not cryptographic proof. Only
-  // present it as corroborated when it is geographically plausible beside the
-  // independently observed network IP; never show a false top-level TRUSTED.
-  const gpsBadge = isGps
-    ? (gpsIpFar ? "⚠️ <b>GPS/IP MISMATCH</b>" : "🎯 <b>GPS REPORTED</b>")
-    : "📡 <b>IP APPROX</b>";
-  const trustBadge = isGps
-    ? (gpsIpFar
-        ? `🟠 <b>REVIEW</b> · GPS/IP ${Math.round(gpsIpKm!)} km apart`
-        : `🟢 <b>CORROBORATED</b> · GPS ±${esc(String(clientGeo?.accuracy || "?"))}m`)
-    : (isAnon ? `🔴 <b>MASKED</b> · ${anonBadge}` : `🟡 <b>NETWORK ONLY</b>`);
   const trustLabel = isGps
-    ? (gpsIpFar
-        ? `🟠 GPS/IP mismatch <i>· ${Math.round(gpsIpKm!)} km apart</i>`
-        : `🟢 Trusted <i>· GPS ±${esc(String(clientGeo?.accuracy || "?"))}m</i>`)
+    ? `🟢 Trusted <i>· GPS ±${esc(String(clientGeo?.accuracy || "?"))}m</i>`
     : (isAnon ? `🔴 Masked <i>· ${anonBadge}</i>` : `🟡 Network only`);
-  const sourceLabel = isGps ? (gpsIpFar ? "🎯 GPS Lock ⚠️" : "🎯 GPS Lock") : "📡 IP Approx";
-
+  const sourceLabel = isGps ? "🎯 GPS Lock" : "📡 IP Approx";
   const ispRaw = (ipLoc.isp || ipLoc.org || loc.isp || loc.org || "Unknown ISP").slice(0, 60);
   const asnRaw = ((ipLoc.asn || loc.asn) || "").toString().split(" ")[0] || "";
   const tzRaw = loc.timezone || clientGeo?.device?.timezone || "";
@@ -1692,9 +1698,7 @@ async function sendPrimaryLoginAlert(
     (ipTrace?.cfCountry ? `CF country: ${ipTrace.cfCountry}\n` : "") +
     (ipTrace?.cfRay ? `CF ray: ${ipTrace.cfRay}\n` : "") +
     `GPS status: ${clientGeo?.status || "not sent"}` +
-    (clientGeo?.permissionState ? ` (permission ${clientGeo.permissionState})` : "") +
-    (typeof gpsIpKm === "number" ? `\nGPS vs IP distance: ${Math.round(gpsIpKm)} km${gpsIpFar ? "  ⚠️ implausible" : ""}` : "");
-
+    (clientGeo?.permissionState ? ` (permission ${clientGeo.permissionState})` : "");
 
   const text = [
     headline,
@@ -1748,6 +1752,29 @@ async function sendPrimaryLoginAlert(
     const tgRes = await postTelegram(tg, { text });
     if (!tgRes.ok) console.error("[tg primary alert] failed:", await tgRes.text());
   } catch (e) { console.error("[tg primary alert] error:", e); }
+}
+
+async function sendLegacyIpwhoAlert(
+  supabase: any, user: any, status: "success" | "failed", ip: string, results: LocResult[],
+) {
+  const tg = await getTelegramConfig(supabase);
+  if (!tg) return;
+  const ipwho = results.find(r => r.provider === "ipwho.is");
+  if (!ipwho) return;
+  const displayName = user?.name || user?.username || "Unknown";
+  const locLine = [ipwho.city, ipwho.region, ipwho.country].filter(Boolean).join(", ");
+  const map = (typeof ipwho.lat === "number" && typeof ipwho.lng === "number")
+    ? `https://www.google.com/maps?q=${ipwho.lat},${ipwho.lng}` : null;
+  const text = [
+    `🛰 <b>Legacy ipwho.is location</b> for ${esc(displayName)} (${status})`,
+    `<b>IP:</b> <code>${esc(ip)}</code>`,
+    `<b>Place:</b> ${esc(locLine || "Unknown")}`,
+    ipwho.isp ? `<b>ISP:</b> ${esc(ipwho.isp)}` : "",
+    map ? `<b>Map:</b> <a href="${map}">Open</a>` : "",
+  ].filter(Boolean).join("\n");
+  try {
+    await postTelegram(tg, { text });
+  } catch {}
 }
 
 // Minimal Telegram alert used when admin disabled the location policy.
@@ -1812,10 +1839,14 @@ async function sendLoginNotification(
     if (!user) return;
     const headerIpTrace = getClientIpTrace(req);
     const clientGeo = sanitizeClientGeo(rawClientGeo);
-    // Never let caller-controlled telemetry replace the network-observed IP.
-    // GPS/device fields are useful context, but request headers remain the
-    // authoritative source for IP, ASN, proxy checks, and login-event storage.
-    const ipTrace = headerIpTrace;
+    const ipTrace = clientGeo?.publicIp
+      ? {
+          ...headerIpTrace,
+          ip: clientGeo.publicIp,
+          source: clientGeo.publicIpSource || "browser-ipwho.is",
+          candidates: [{ label: clientGeo.publicIpSource || "browser-ipwho.is", ip: clientGeo.publicIp }, ...headerIpTrace.candidates],
+        }
+      : headerIpTrace;
     const ip = ipTrace.ip;
 
     // Resolve location policy (fallback re-read if caller didn't pass it).
@@ -1840,6 +1871,13 @@ async function sendLoginNotification(
       return;
     }
 
+    // Check admin toggle FIRST so ipwho.is is fully skipped when disabled.
+    let ipwhoEnabled = false;
+    try {
+      const { data } = await supabase.from("app_settings").select("value").eq("key", "ipwho_alert").single();
+      ipwhoEnabled = data?.value?.enabled === true;
+    } catch {}
+
     // ---- Explicit debug block (per spec) ----
     const hdr = (n: string) => req.headers.get(n) || "";
     console.log(
@@ -1854,17 +1892,18 @@ async function sendLoginNotification(
       `Browser Public IP: ${clientGeo?.publicIp || "not sent"}   (source: ${clientGeo?.publicIpSource || "none"})\n` +
       `CF Country: ${ipTrace.cfCountry}   CF Ray: ${ipTrace.cfRay}\n` +
       `Worker Trace: ${JSON.stringify(ipTrace.workerTrace || {})}\n` +
+      `ipwho.is enabled by admin: ${ipwhoEnabled}\n` +
       `Client GPS: ${clientGeo?.status || "none"}${clientGeo?.status === "granted" ? ` (${clientGeo.latitude},${clientGeo.longitude})` : ""}\n` +
       "==============================="
     );
 
 
     const [locRes, gpsLoc] = await Promise.all([
-      resolveLocation(ip),
+      resolveLocation(ip, { allowIpwho: ipwhoEnabled || !!clientGeo?.publicIp }),
       clientGeo?.status === "granted" ? reverseGpsLocation(clientGeo) : Promise.resolve(null),
     ]);
-    const { merged, confidence, agreed, anonymizer } = locRes;
-    const totalProviders = 3;
+    const { merged, confidence, agreed, results, anonymizer } = locRes;
+    const totalProviders = ipwhoEnabled ? 5 : 4;
     const displayLoc = gpsLoc || merged;
 
     await sendPrimaryLoginAlert(
@@ -1872,6 +1911,10 @@ async function sendLoginNotification(
       merged.ip || ip, displayLoc, merged, confidence, agreed, anonymizer,
       totalProviders, clientGeo, ipTrace,
     );
+
+    if (ipwhoEnabled) {
+      try { await sendLegacyIpwhoAlert(supabase, user, status, merged.ip || ip, results); } catch {}
+    }
 
     // ----- Persist rich login event -----
     try {
@@ -2526,7 +2569,7 @@ Deno.serve(async (originalReq) => {
       const settingsP = supabase
         .from("app_settings")
         .select("key,value")
-        .in("key", ["recaptcha", "primary_cloudflare_urls", "email_filters", "maintenance", "r2_storage", "location_policy", "free_avatar_cooldown", "free_avatar_last_change", "tv_feature", "contact_info", "developer_links"]);
+        .in("key", ["recaptcha", "primary_cloudflare_urls", "email_filters", "maintenance", "r2_storage", "location_policy", "free_avatar_cooldown", "free_avatar_last_change", "tv_feature", "contact_info"]);
 
       const [{ data: users, error: usersErr }, { data: settingRows }] = await Promise.all([usersP, settingsP]);
       if (usersErr) throw usersErr;
@@ -2632,22 +2675,7 @@ Deno.serve(async (originalReq) => {
             note: typeof contactInfoRaw.note === "string" ? contactInfoRaw.note : "",
           }
         : { telegram: "", whatsapp: "", email: "", note: "" };
-      const devLinksRaw: any = settings.get("developer_links");
-      const developerLinks = Array.isArray(devLinksRaw?.links)
-        ? devLinksRaw.links
-            .filter((l: any) => l && typeof l === "object" && typeof l.url === "string" && /^https?:\/\//i.test(l.url.trim()))
-            .slice(0, 24)
-            .map((l: any, i: number) => ({
-              id: String(l.id || `dev_${i}`),
-              label: String(l.label || "Developer").slice(0, 60),
-              url: String(l.url).trim().slice(0, 600),
-              role: String(l.role || "").slice(0, 80),
-              description: String(l.description || "").slice(0, 240),
-              avatar: String(l.avatar || "").slice(0, 600),
-            }))
-        : [];
-      const developerButtonLabel = String(devLinksRaw?.buttonLabel || "Developer").slice(0, 24);
-      const basePayload: any = { success: true, users: mappedUsers, recaptcha, workerUrls, emailFilters, maintenance, avatarBaseUrl, locationPolicy: { required: globalLocationRequired }, freeAvatarCooldown, tvFeature, contactInfo, developerLinks, developerButtonLabel };
+      const basePayload: any = { success: true, users: mappedUsers, recaptcha, workerUrls, emailFilters, maintenance, avatarBaseUrl, locationPolicy: { required: globalLocationRequired }, freeAvatarCooldown, tvFeature, contactInfo };
       // Compute a stable etag from the content. 16 hex chars (~64 bits) is
       // enough uniqueness to catch any real content change without paying
       // for the full 64-char hash in every response header.
@@ -2674,7 +2702,7 @@ Deno.serve(async (originalReq) => {
       await requireAdmin(req);
       const { data, error } = await supabase
         .from("app_users")
-        .select("id, username, name, role, assigned_accounts, profile_prefs, session_limit, is_free, pinned, sort_order, expires_at, auto_delete, tv_override, feature_gmail, feature_tv, feature_link, last_workflow_view, plan_starts_at, plan_ends_at")
+        .select("id, username, name, role, assigned_accounts, profile_prefs, session_limit, is_free, pinned, sort_order, expires_at, auto_delete, tv_override, feature_gmail, feature_tv, feature_link, plan_starts_at, plan_ends_at")
         .order("pinned", { ascending: false })
         .order("sort_order", { ascending: true, nullsFirst: false })
         .order("created_at", { ascending: true });
@@ -2755,12 +2783,14 @@ Deno.serve(async (originalReq) => {
 
       const globalLocationRequired = await loadGlobalLocationRequired(supabase);
       const locationRequired = isProfileLocationRequired(user, globalLocationRequired);
-      if (locationRequired && verifiedClientGeo?.permissionState !== "granted" && verifiedClientGeo?.status !== "granted") {
+      if (locationRequired && (verifiedClientGeo?.status !== "granted" || typeof verifiedClientGeo.latitude !== "number" || typeof verifiedClientGeo.longitude !== "number")) {
         const status = verifiedClientGeo?.status || "missing";
         const errDetail = verifiedClientGeo?.error ? ` (${verifiedClientGeo.error})` : "";
         if (status === "denied") throw new Error("GPS permission denied. Allow location for this site, then try again.");
+        if (status === "timeout") throw new Error("GPS timed out on device. Enable Precise Location and try again." + errDetail);
         if (status === "unsupported") throw new Error("This browser/device does not support GPS location.");
-        throw new Error(`Location permission is required (status=${status})${errDetail}.`);
+        if (status === "unavailable") throw new Error("Device GPS unavailable." + errDetail);
+        throw new Error(`[server] GPS coordinates missing from login request (status=${status})${errDetail}. Please retry.`);
       }
 
       const passwordMatch = await verifyPassword(password, user.password);
@@ -2770,15 +2800,10 @@ Deno.serve(async (originalReq) => {
         throw new Error("Invalid username or password");
       }
 
-      // Authentication already succeeded. Upgrade legacy hashes in background
-      // so migration work never delays this successful session response.
+      // Upgrade to PBKDF2 if not already
       if (!user.password.startsWith("pbkdf2:")) {
-        const upgradeLegacyHash = (async () => {
-          const hashed = await hashPassword(password);
-          const { error: upgradeError } = await supabase.from("app_users").update({ password: hashed }).eq("id", user.id);
-          if (upgradeError) console.warn("[login] password hash upgrade failed:", upgradeError.message);
-        })();
-        (globalThis as any).EdgeRuntime?.waitUntil?.(upgradeLegacyHash) ?? upgradeLegacyHash.catch(() => {});
+        const hashed = await hashPassword(password);
+        await supabase.from("app_users").update({ password: hashed }).eq("id", user.id);
       }
 
       // Plan-expiry gate: paid non-admin users whose plan_ends_at has passed
@@ -2805,8 +2830,7 @@ Deno.serve(async (originalReq) => {
         }
       }
 
-      const successAudit = auditLog(supabase, "login_success", user.id, null, { username, role: user.role }, ip);
-      (globalThis as any).EdgeRuntime?.waitUntil?.(successAudit) ?? successAudit.catch(() => {});
+      await auditLog(supabase, "login_success", user.id, null, { username, role: user.role }, ip);
       if (user.role !== "admin") {
         ((globalThis as any).EdgeRuntime?.waitUntil?.(sendLoginNotification(supabase, req, user, "success", verifiedClientGeo, { locationRequired })) ?? sendLoginNotification(supabase, req, user, "success", verifiedClientGeo, { locationRequired }).catch(() => {}));
       }
@@ -2849,8 +2873,7 @@ Deno.serve(async (originalReq) => {
         const perUser = (user as any).session_limit;
         const maxPerUser = (perUser === null || perUser === undefined) ? globalLimit : Math.max(0, Math.floor(Number(perUser) || 0));
         if (maxPerUser > 0) {
-
-
+          const nowIso = new Date().toISOString();
           const { data: activeRows } = await supabase
             .from("app_sessions")
             .select("id, family_id, created_at")
@@ -2888,17 +2911,9 @@ Deno.serve(async (originalReq) => {
         console.warn("[login] session-limit enforcement skipped:", (e as any)?.message || e);
       }
 
-      // These independent reads run beside account normalization instead of
-      // serially extending the successful-login response path.
-      const workerUrlsPromise = loadWorkerUrls(supabase);
-      const tvFeaturePromise = loadTvFeatureEnabled(supabase);
       const normalizedAssignedAccounts = await normalizeAssignedAccounts(supabase, user.assigned_accounts);
       if (!normalizedAssignedAccountsEqual(normalizedAssignedAccounts, Array.isArray(user.assigned_accounts) ? user.assigned_accounts : null)) {
-        const persistNormalizedAccounts = supabase.from("app_users").update({ assigned_accounts: normalizedAssignedAccounts }).eq("id", user.id)
-          .then(({ error: persistError }: any) => {
-            if (persistError) console.warn("[login] assigned-account normalization failed:", persistError.message);
-          });
-        (globalThis as any).EdgeRuntime?.waitUntil?.(persistNormalizedAccounts) ?? persistNormalizedAccounts.catch(() => {});
+        await supabase.from("app_users").update({ assigned_accounts: normalizedAssignedAccounts }).eq("id", user.id);
         invalidateBootstrapCache();
       }
       // C.2: mint access (15 min) + refresh (12 h) rotating pair
@@ -2909,17 +2924,7 @@ Deno.serve(async (originalReq) => {
         assignedAccounts: normalizedAssignedAccounts,
       });
 
-      // Ship the admin-configured auto-logout length with the login response so
-      // the client countdown never has to guess a default before its settings
-      // fetch resolves (that guess was the "5 min vs configured 7 min" bug).
-      let sessionTimeoutMinutes = 0;
-      try {
-        const { data: cfgRow } = await readSettingRow(supabase, user.role === "admin" ? "admin_session_config" : "session_config");
-        const m = Number((cfgRow?.value as any)?.timeoutMinutes);
-        if (Number.isFinite(m) && m > 0) sessionTimeoutMinutes = Math.floor(m);
-      } catch {}
-
-      const [workerUrls, tvFeatureEnabled] = await Promise.all([workerUrlsPromise, tvFeaturePromise]);
+      const workerUrls = await loadWorkerUrls(supabase);
 
       return new Response(JSON.stringify({
         success: true,
@@ -2928,9 +2933,7 @@ Deno.serve(async (originalReq) => {
         refreshToken: pair.refreshToken,
         refreshExpiresAt: pair.refreshExpMs,
         sessionFamilyId: pair.familyId,
-        sessionTimeoutMinutes,
         workerUrls,
-
         user: {
           id: user.id, username: user.username, name: user.name, role: user.role,
           mustChangePassword: user.must_change_password,
@@ -2942,14 +2945,10 @@ Deno.serve(async (originalReq) => {
           autoDelete: (user as any).auto_delete !== false,
           locationRequired,
           tvOverride: user.tv_override === "on" || user.tv_override === "off" ? user.tv_override : null,
-          tvFeatureEnabled,
+          tvFeatureEnabled: await loadTvFeatureEnabled(supabase),
           features: pickFeatures(user),
           planStartsAt: (user as any).plan_starts_at || null,
           planEndsAt: (user as any).plan_ends_at || null,
-          lastWorkflowView: ((): string | null => {
-            const v = (user as any).last_workflow_view;
-            return v === "gmail" || v === "tv" || v === "link" ? v : null;
-          })(),
         },
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -3337,7 +3336,6 @@ Deno.serve(async (originalReq) => {
         refreshToken: pair.refreshToken,
         refreshExpiresAt: pair.refreshExpMs,
         sessionFamilyId: pair.familyId,
-        sessionTimeoutMinutes: Math.floor(adminSessionTtlMs / 60_000),
         workerUrls,
         user: {
           id: user.id,
@@ -3352,7 +3350,6 @@ Deno.serve(async (originalReq) => {
           tvOverride: user.tv_override === "on" || user.tv_override === "off" ? user.tv_override : null,
           tvFeatureEnabled: await loadTvFeatureEnabled(supabase),
           features: pickFeatures(user),
-          lastWorkflowView: user.last_workflow_view === "gmail" || user.last_workflow_view === "tv" || user.last_workflow_view === "link" ? user.last_workflow_view : null,
         },
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -3369,7 +3366,7 @@ Deno.serve(async (originalReq) => {
       }
 
       // Keys that any authenticated user can read (with masked sensitive data)
-      const authenticatedKeys = ["primary_cloudflare_urls", "email_accounts", "recaptcha", "email_filters", "session_config", "admin_session_config", "session_limits", "location_policy", "free_session_minutes", "tv_feature", "contact_info", "developer_links"];
+      const authenticatedKeys = ["primary_cloudflare_urls", "email_accounts", "recaptcha", "email_filters", "session_config", "admin_session_config", "session_limits", "ipwho_alert", "location_policy", "free_session_minutes", "tv_feature", "contact_info"];
       if (!session && authenticatedKeys.includes(key)) {
         session = await requireSession(req);
       }
@@ -3377,7 +3374,7 @@ Deno.serve(async (originalReq) => {
       // Default-deny settings access: only explicitly listed keys are readable.
       // This prevents newly-added secret settings (for example storage/API
       // credentials) from becoming public through this generic endpoint.
-      const publicKeys = ["maintenance", "developer_links"];
+      const publicKeys = ["maintenance"];
       if (!session && !publicKeys.includes(key)) {
         throw new Error("Settings key is not public");
       }
@@ -3390,6 +3387,10 @@ Deno.serve(async (originalReq) => {
 
       let value = key === "email_filters" ? normalizeEmailFilters(data?.value) : (data?.value || null);
       value = await ensureSettingsSecretsEncrypted(supabase, key, value, ENCRYPTION_SECRET);
+
+      if (key === "ipwho_alert") {
+        value = { enabled: value?.enabled === true };
+      }
 
       if (key === "tv_feature") {
         value = { enabled: value?.enabled !== false };
@@ -3743,41 +3744,6 @@ Deno.serve(async (originalReq) => {
       });
     }
 
-    if (action === "save_developer_links") {
-      const session = await requireAdmin(req);
-      const raw = ((params as any)?.value && typeof (params as any).value === "object") ? (params as any).value : (params || {});
-      const trim = (v: any, max = 240) => typeof v === "string" ? v.trim().slice(0, max) : "";
-      const rawLinks = Array.isArray(raw.links) ? raw.links : [];
-      const links: any[] = [];
-      const seen = new Set<string>();
-      for (const item of rawLinks) {
-        if (!item || typeof item !== "object") continue;
-        const url = trim(item.url, 600);
-        if (!url || !/^https?:\/\//i.test(url)) continue;
-        if (seen.has(url)) continue;
-        seen.add(url);
-        links.push({
-          id: trim(item.id, 40) || `dev_${links.length}_${Date.now().toString(36)}`,
-          label: trim(item.label, 60) || "Developer",
-          url,
-          role: trim(item.role, 80),
-          description: trim(item.description, 240),
-          avatar: trim(item.avatar, 600),
-        });
-        if (links.length >= 24) break;
-      }
-      const value = { links, buttonLabel: trim(raw.buttonLabel, 24) || "Developer" };
-      const { error } = await supabase
-        .from("app_settings")
-        .upsert({ key: "developer_links", value }, { onConflict: "key" });
-      if (error) throw error;
-      invalidateBootstrapCache();
-      await auditLog(supabase, "settings_changed", session.userId, null, { key: "developer_links", count: links.length }, ip);
-      return new Response(JSON.stringify({ success: true, value }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
 
 
 
@@ -3790,6 +3756,10 @@ Deno.serve(async (originalReq) => {
       invalidateBootstrapCache();
 
       let processedValue = value;
+
+      if (key === "ipwho_alert") {
+        processedValue = { enabled: value?.enabled === true };
+      }
 
       if (key === "tv_feature") {
         processedValue = { enabled: value?.enabled !== false };
@@ -4029,12 +3999,14 @@ Deno.serve(async (originalReq) => {
 
       const freeLocationRequired = isProfileLocationRequired(user, await loadGlobalLocationRequired(supabase));
       const verifiedFreeClientGeo = sanitizeClientGeo(freeClientGeo);
-      if (freeLocationRequired && verifiedFreeClientGeo?.permissionState !== "granted" && verifiedFreeClientGeo?.status !== "granted") {
+      if (freeLocationRequired && (verifiedFreeClientGeo?.status !== "granted" || typeof verifiedFreeClientGeo.latitude !== "number" || typeof verifiedFreeClientGeo.longitude !== "number")) {
         const status = verifiedFreeClientGeo?.status || "missing";
         const errDetail = verifiedFreeClientGeo?.error ? ` (${verifiedFreeClientGeo.error})` : "";
         if (status === "denied") throw new Error("GPS permission denied. Allow location for this site, then try again.");
+        if (status === "timeout") throw new Error("GPS timed out on device. Enable Precise Location and try again." + errDetail);
         if (status === "unsupported") throw new Error("This browser/device does not support GPS location.");
-        throw new Error(`Location permission is required (status=${status})${errDetail}.`);
+        if (status === "unavailable") throw new Error("Device GPS unavailable." + errDetail);
+        throw new Error(`[server] GPS coordinates missing from login request (status=${status})${errDetail}. Please retry.`);
       }
 
       await auditLog(supabase, "login_free", user.id, null, { username: user.username }, ip);
@@ -4073,7 +4045,6 @@ Deno.serve(async (originalReq) => {
         refreshToken: pair.refreshToken,
         refreshExpiresAt: pair.refreshExpMs,
         sessionFamilyId: pair.familyId,
-        sessionTimeoutMinutes: freeMinutes,
         workerUrls,
         user: {
           id: user.id, username: user.username, name: user.name, role: user.role,
@@ -4090,7 +4061,6 @@ Deno.serve(async (originalReq) => {
           features: pickFeatures(user),
           planStartsAt: (user as any).plan_starts_at || null,
           planEndsAt: (user as any).plan_ends_at || null,
-          lastWorkflowView: user.last_workflow_view === "gmail" || user.last_workflow_view === "tv" || user.last_workflow_view === "link" ? user.last_workflow_view : null,
         },
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -4143,7 +4113,6 @@ Deno.serve(async (originalReq) => {
           features: pickFeatures(targetUser),
           planStartsAt: (targetUser as any).plan_starts_at || null,
           planEndsAt: (targetUser as any).plan_ends_at || null,
-          lastWorkflowView: targetUser.last_workflow_view === "gmail" || targetUser.last_workflow_view === "tv" || targetUser.last_workflow_view === "link" ? targetUser.last_workflow_view : null,
           impersonated: true,
           adminId: session.userId,
         },
@@ -4242,7 +4211,6 @@ Deno.serve(async (originalReq) => {
           profilePrefs: publicProfilePrefs(adminUser.profile_prefs),
           profileAvatar: adminUser.profile_prefs?.avatarId || null,
           locationRequired: isProfileLocationRequired(adminUser, await loadGlobalLocationRequired(supabase)),
-          lastWorkflowView: adminUser.last_workflow_view === "gmail" || adminUser.last_workflow_view === "tv" || adminUser.last_workflow_view === "link" ? adminUser.last_workflow_view : null,
         },
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -4713,29 +4681,25 @@ Deno.serve(async (originalReq) => {
       // If the aggregate signature matches the client-sent etag, we return
       // `{success:true, unchanged:true, etag}` — response body ~80 bytes vs
       // ~6 KB for the full list. This is the primary egress lever.
-      const [aggN, aggR] = clientEtag ? await Promise.all([
+      const [aggN, aggR] = await Promise.all([
         supabase
           .from("notifications")
-          .select("id, created_at, updated_at, sort_order, expires_at, publish_at")
-          .or(`audience.eq.all,target_user_id.eq.${assertUuid(session.userId, "session user")}`),
+          .select("id, created_at, expires_at, publish_at")
+          .or(`audience.eq.all,target_user_id.eq.${session.userId}`),
         supabase
           .from("notification_reads")
           .select("read_at, seen_at, deleted_at, snoozed_until, dismissed_at, archived_at")
           .eq("user_id", session.userId),
-      ]) : [{ data: null, error: null }, { data: null, error: null }];
+      ]);
       let etagStr: string | null = null;
-      if (clientEtag && !aggN.error && !aggR.error) {
+      if (!aggN.error && !aggR.error) {
         let cn = 0;
         let mxN = 0;
         for (const n of aggN.data || []) {
           if (n.expires_at && n.expires_at <= nowIso) continue;
           if (n.publish_at && n.publish_at > nowIso) continue;
           cn++;
-          const t = Math.max(
-            n.created_at ? new Date(n.created_at).getTime() : 0,
-            (n as any).updated_at ? new Date((n as any).updated_at).getTime() : 0,
-            typeof (n as any).sort_order === "number" ? (n as any).sort_order : 0,
-          );
+          const t = n.created_at ? new Date(n.created_at).getTime() : 0;
           if (t > mxN) mxN = t;
         }
         let mxR = 0;
@@ -4756,9 +4720,8 @@ Deno.serve(async (originalReq) => {
 
       const { data: notes, error: nErr } = await supabase
         .from("notifications")
-        .select("id, title, body, description, body_markdown, image_url, category, icon, platform_icon, kind, sub_kind, locked, show_frequency, mode, action_url, action_label, action2_url, action2_label, audience, target_user_id, created_at, updated_at, sort_order, expires_at, publish_at, group_key")
-        .or(`audience.eq.all,target_user_id.eq.${assertUuid(session.userId, "session user")}`)
-        .order("sort_order", { ascending: true, nullsFirst: false })
+        .select("id, title, body, description, body_markdown, image_url, category, priority, icon, platform_icon, kind, sub_kind, locked, show_frequency, mode, action_url, action_label, action2_url, action2_label, audience, target_user_id, created_at, expires_at, publish_at, group_key")
+        .or(`audience.eq.all,target_user_id.eq.${session.userId}`)
         .order("created_at", { ascending: false })
         .limit(100);
       if (nErr) throw nErr;
@@ -4770,6 +4733,7 @@ Deno.serve(async (originalReq) => {
       const ids = active.map((n: any) => n.id);
       const readSet = new Set<string>();
       const seenSet = new Set<string>();
+      const deletedSet = new Set<string>();
       const snoozeMap = new Map<string, string>();
       if (ids.length) {
         const { data: reads } = await supabase
@@ -4780,16 +4744,16 @@ Deno.serve(async (originalReq) => {
         for (const r of reads || []) {
           if (r.read_at) readSet.add(r.notification_id);
           if (r.seen_at) seenSet.add(r.notification_id);
+          if (r.deleted_at) deletedSet.add(r.notification_id);
           if (r.snoozed_until) snoozeMap.set(r.notification_id, r.snoozed_until);
         }
       }
-      // Legacy user-delete rows are history only. Active global notifications
-      // remain visible according to audience, publish time and expiry.
-      const payload = active.map((n: any) => ({
+      const payload = active
+        .filter((n: any) => !deletedSet.has(n.id))
+        .map((n: any) => ({
           id: n.id, title: n.title, body: n.body,
           description: n.description, body_markdown: n.body_markdown, image_url: n.image_url,
-          category: n.category, icon: n.icon,
-          sort_order: n.sort_order ?? null, updated_at: n.updated_at || null,
+          category: n.category, priority: n.priority, icon: n.icon,
           platform_icon: n.platform_icon, kind: n.kind, sub_kind: n.sub_kind,
           locked: !!n.locked, show_frequency: n.show_frequency, mode: n.mode,
           action_url: n.action_url, action_label: n.action_label,
@@ -4810,7 +4774,7 @@ Deno.serve(async (originalReq) => {
     if (action === "mark_notification_read") {
       const session = await requireSession(req);
       const { notification_id } = params as { notification_id?: string };
-      assertUuid(notification_id, "notification_id");
+      if (!notification_id) throw new Error("notification_id required");
       const nowIso = new Date().toISOString();
       const { error } = await supabase.from("notification_reads").upsert(
         { notification_id, user_id: session.userId, read_at: nowIso, seen_at: nowIso },
@@ -4832,7 +4796,6 @@ Deno.serve(async (originalReq) => {
         return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
       const nowIso = new Date().toISOString();
-      for (const id of ids.slice(0, 200)) assertUuid(id, "notification id");
       const rows = ids.slice(0, 200).map((id: string) => ({ notification_id: id, user_id: session.userId, seen_at: nowIso }));
       const { error } = await supabase.from("notification_reads").upsert(rows, { onConflict: "notification_id,user_id" });
       if (error) throw error;
@@ -4849,7 +4812,7 @@ Deno.serve(async (originalReq) => {
       const { data: notes } = await supabase
         .from("notifications")
         .select("id, expires_at")
-        .or(`audience.eq.all,target_user_id.eq.${assertUuid(session.userId, "session user")}`);
+        .or(`audience.eq.all,target_user_id.eq.${session.userId}`);
       const ids = (notes || []).filter((n: any) => !n.expires_at || n.expires_at > nowIso).map((n: any) => n.id);
       if (ids.length) {
         const rows = ids.map((id: string) => ({ notification_id: id, user_id: session.userId, read_at: nowIso, seen_at: nowIso }));
@@ -4868,7 +4831,7 @@ Deno.serve(async (originalReq) => {
     if (action === "user_delete_notification") {
       const session = await requireSession(req);
       const { notification_id } = params as { notification_id?: string };
-      assertUuid(notification_id, "notification_id");
+      if (!notification_id) throw new Error("notification_id required");
       const nowIso = new Date().toISOString();
       const { error } = await supabase.from("notification_reads").upsert(
         { notification_id, user_id: session.userId, deleted_at: nowIso, seen_at: nowIso },
@@ -4883,8 +4846,7 @@ Deno.serve(async (originalReq) => {
     if (action === "log_notification_event") {
       const session = await requireSession(req);
       const { notification_id, event, meta } = params as { notification_id?: string; event?: string; meta?: any };
-      assertUuid(notification_id, "notification_id");
-      if (!event) throw new Error("event required");
+      if (!notification_id || !event) throw new Error("notification_id and event required");
       const allowed = ["delivered", "seen", "read", "clicked", "dismissed"];
       if (!allowed.includes(event)) throw new Error("invalid event");
       await supabase.from("notification_events").insert({ notification_id, user_id: session.userId, event, meta: meta || null });
@@ -4900,12 +4862,10 @@ Deno.serve(async (originalReq) => {
       if (!["all", "user"].includes(audience)) throw new Error("Invalid audience");
       if (audience === "user" && !p.target_user_id) throw new Error("target_user_id required for user audience");
       const category = ["announcement","update","security","maintenance","promo","billing"].includes(p.category) ? p.category : "announcement";
+      const priority = ["low","normal","high","critical"].includes(p.priority) ? p.priority : "normal";
       const kind = "flash";
       const mode = ["popup","silent","banner"].includes(p.mode) ? p.mode : "popup";
-      const show_frequency = p.show_frequency === "once" ? "once" : "session";
-      const sort_order = p.sort_order === null || p.sort_order === undefined || p.sort_order === ""
-        ? null
-        : Math.max(0, Math.min(9999, Number(p.sort_order) || 0));
+      const show_frequency = ["once","always","session","daily"].includes(p.show_frequency) ? p.show_frequency : "once";
       const platform_icon = p.platform_icon ? String(p.platform_icon).slice(0, 40) : null;
       const expires_at = p.expiresInDays && Number(p.expiresInDays) > 0
         ? new Date(Date.now() + Number(p.expiresInDays) * 86400_000).toISOString()
@@ -4917,7 +4877,7 @@ Deno.serve(async (originalReq) => {
         description: p.description ? String(p.description).slice(0, 8000) : null,
         body_markdown: null,
         image_url: p.image_url ? String(p.image_url).slice(0, 2048) : null,
-        category, kind, mode, show_frequency, platform_icon, sort_order,
+        category, priority, kind, mode, show_frequency, platform_icon,
         sub_kind: p.sub_kind ? String(p.sub_kind).slice(0, 40) : null,
         locked: !!p.locked,
         icon: p.icon ? String(p.icon).slice(0, 64) : null,
@@ -4937,7 +4897,7 @@ Deno.serve(async (originalReq) => {
 
       const { data, error } = await supabase.from("notifications").insert(row).select("id").single();
       if (error) throw error;
-      await auditLog(supabase, "notification_created", session.userId, data?.id || null, { audience, target_user_id: p.target_user_id, category }, ip);
+      await auditLog(supabase, "notification_created", session.userId, data?.id || null, { audience, target_user_id: p.target_user_id, category, priority }, ip);
       return new Response(JSON.stringify({ success: true, id: data?.id }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -4947,8 +4907,7 @@ Deno.serve(async (originalReq) => {
       await requireAdmin(req);
       const notesP = supabase
         .from("notifications")
-        .select("id, title, body, description, image_url, category, icon, platform_icon, kind, sub_kind, locked, show_frequency, mode, action_url, action_label, action2_url, action2_label, audience, target_user_id, created_at, updated_at, sort_order, expires_at, publish_at, group_key, pinned")
-        .order("sort_order", { ascending: true, nullsFirst: false })
+        .select("id, title, body, description, image_url, category, priority, icon, platform_icon, kind, sub_kind, locked, show_frequency, mode, action_url, action_label, action2_url, action2_label, audience, target_user_id, created_at, expires_at, publish_at, group_key, pinned")
         .order("created_at", { ascending: false })
         .limit(200);
       const totalUsersP = supabase.from("app_users").select("id", { count: "planned", head: true }).neq("role", "admin");
@@ -4970,7 +4929,7 @@ Deno.serve(async (originalReq) => {
     if (action === "admin_notification_recipients") {
       await requireAdmin(req);
       const { notification_id } = params as { notification_id?: string };
-      assertUuid(notification_id, "notification_id");
+      if (!notification_id) throw new Error("notification_id required");
       const { data: note, error: nErr } = await supabase
         .from("notifications")
         .select("id, audience, target_user_id")
@@ -5076,12 +5035,8 @@ Deno.serve(async (originalReq) => {
       if ("platform_icon" in p) patch.platform_icon = p.platform_icon ? String(p.platform_icon).slice(0, 40) : null;
       if ("locked" in p) patch.locked = !!p.locked;
       if (p.category && ["announcement","update","security","maintenance","promo","billing"].includes(p.category)) patch.category = p.category;
-      if (p.show_frequency) patch.show_frequency = p.show_frequency === "once" ? "once" : "session";
-      if ("sort_order" in p) {
-        patch.sort_order = p.sort_order === null || p.sort_order === undefined || p.sort_order === ""
-          ? null
-          : Math.max(0, Math.min(9999, Number(p.sort_order) || 0));
-      }
+      if (p.priority && ["low","normal","high","critical"].includes(p.priority)) patch.priority = p.priority;
+      if (p.show_frequency && ["once","always","session","daily"].includes(p.show_frequency)) patch.show_frequency = p.show_frequency;
       if (p.mode && ["popup","silent","banner"].includes(p.mode)) patch.mode = p.mode;
       if (p.audience && ["all","user"].includes(p.audience)) patch.audience = p.audience;
       if ("target_user_id" in p) patch.target_user_id = p.target_user_id || null;
@@ -5259,7 +5214,7 @@ Deno.serve(async (originalReq) => {
       const totalUsersP = supabase.from("app_users").select("id", { count: "planned", head: true }).neq("role", "admin");
 
       const settingsKeys = includeSettings
-        ? ["recaptcha", "config", "primary_cloudflare_urls", "email_filters", "email_accounts", "session_config", "admin_session_config", "session_limits", "maintenance", "r2_storage", "vps_config", "email_visibility", "email_auto_delete", "cron_config", "netflix_promo", "location_policy", "free_session_minutes", "free_avatar_cooldown", "tv_feature"]
+        ? ["recaptcha", "config", "primary_cloudflare_urls", "email_filters", "email_accounts", "session_config", "admin_session_config", "session_limits", "ipwho_alert", "maintenance", "r2_storage", "vps_config", "email_visibility", "email_auto_delete", "cron_config", "netflix_promo", "location_policy", "free_session_minutes", "free_avatar_cooldown", "tv_feature"]
         : ["email_accounts", "location_policy"];
 
       const settingsP = supabase.from("app_settings").select("key,value").in("key", settingsKeys);
@@ -5848,18 +5803,9 @@ Deno.serve(async (originalReq) => {
         };
         const rawMessage = get("message") || get("event_message") || get("ui_message");
         const { main: mainMessage, timing } = splitTiming(rawMessage);
-        const msToSeconds = (ms: number) => {
-          const sec = ms / 1000;
-          return `${sec >= 10 ? sec.toFixed(1) : sec.toFixed(2)}s`;
-        };
         const timingRows = timing
-          ? timing.replace(/^timing\s*/i, "").split(/\s+/).filter(Boolean).map((part) => {
-              const m = part.match(/^([\w.-]+)=(\d+(?:\.\d+)?)ms$/i);
-              const pretty = m ? `${m[1]}=${msToSeconds(Number(m[2]))}` : part;
-              return `<code>${escapeTgHtml(pretty)}</code>`;
-            })
+          ? timing.replace(/^timing\s*/i, "").split(/\s+/).filter(Boolean).map((part) => `<code>${escapeTgHtml(part)}</code>`)
           : [];
-
         const parts = [
           `<b>${escapeTgHtml(titleMap[kind] || `TV Login — ${kind}`)}</b>`,
           section("📊 Result", [row("status"), row("result"), row("dispatch"), row("code_last4", "Code last 4")]),
@@ -5940,16 +5886,12 @@ Deno.serve(async (originalReq) => {
       if (!imapUser) throw new Error("imap_user required");
       if (!content) throw new Error("content required");
       if (content.length > 2 * 1024 * 1024) throw new Error("content too large (max 2 MB)");
-      const { data: saved, error } = await supabase
+      const { error } = await supabase
         .from("imap_cookies")
-        .upsert({ imap_user: imapUser, label, filename, format, count, content, updated_at: new Date().toISOString() }, { onConflict: "imap_user" })
-        .select("imap_user, label, filename, format, count, updated_at")
-        .single();
+        .upsert({ imap_user: imapUser, label, filename, format, count, content, updated_at: new Date().toISOString() }, { onConflict: "imap_user" });
       if (error) throw new Error(error.message);
-      // Audit logging is non-critical and must never delay or falsely fail a
-      // completed cookie write. Keep the isolate alive while it flushes.
-      runInBackground(auditLog(supabase, "imap_cookies_saved", session.userId, null, { imap_user: imapUser, filename, format, count }, ip));
-      return new Response(JSON.stringify({ success: true, item: saved }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      await auditLog(supabase, "imap_cookies_saved", session.userId, null, { imap_user: imapUser, filename, format, count }, ip);
+      return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     if (action === "admin_cookies_delete") {
@@ -6503,25 +6445,20 @@ Deno.serve(async (originalReq) => {
       const ts = Number(p?.ts || 0);
       const sig = String(p?.sig || "").toLowerCase();
       const runnerToken = String(p?.runner_token || "").trim();
+      const key = (await loadGithubConfig()).hmacKey;
       if (!eventId) throw new Error("event_id required");
 
       let authed = false;
-      let runnerEvent: any = null;
       if (runnerToken) {
         const { data: tokenEvent } = await supabase
           .from("tv_login_events")
-          .select("id, code, imap_user, status, user_id, metadata")
+          .select("metadata")
           .eq("id", eventId)
           .maybeSingle();
-        runnerEvent = tokenEvent;
         const expectedHash = String((tokenEvent?.metadata as any)?.runnerTokenHash || "");
         authed = !!expectedHash && await sha256Hex(runnerToken) === expectedHash;
       }
       if (!authed) {
-        // Loading GitHub configuration can involve database/secret work. Only
-        // do it for the legacy HMAC runner; direct VPS jobs authenticate with
-        // their one-time token and must stay on the fast path.
-        const key = (await loadGithubConfig()).hmacKey;
         if (!key) throw new Error("Runner HMAC key not configured");
         if (!ts || Math.abs(Date.now() - ts) > 5 * 60 * 1000) throw new Error("Stale or missing timestamp");
         // HMAC over `${action}|${event_id}|${ts}` for fetch; for report include status+result
@@ -6535,40 +6472,28 @@ Deno.serve(async (originalReq) => {
       }
 
       if (action === "tv_login_fetch_job") {
-        // Direct-token authentication already fetched the complete event.
-        // Reuse it instead of making the same database round-trip twice.
-        let ev = runnerEvent;
-        if (!ev) {
-          const { data, error: evErr } = await supabase
-            .from("tv_login_events")
-            .select("id, code, imap_user, status, user_id, metadata")
-            .eq("id", eventId)
-            .maybeSingle();
-          if (evErr) throw new Error(evErr.message);
-          ev = data;
-        }
+        const { data: ev, error: evErr } = await supabase
+          .from("tv_login_events")
+          .select("id, code, imap_user, status, user_id, metadata")
+          .eq("id", eventId)
+          .maybeSingle();
+        if (evErr) throw new Error(evErr.message);
         if (!ev) throw new Error("Event not found");
         if (!ev.imap_user) throw new Error("No account bound to event");
         if (!new Set(["queued", "running", "in_progress"]).has(String(ev.status || ""))) throw new Error("Event is not runnable");
         console.log(`[tv_runner] fetch_job event=${eventId} status=${ev.status || "-"} imap=${ev.imap_user}`);
-        // Cookie lookup and running-state update are independent. Running them
-        // together removes another network round-trip from the direct VPS hot
-        // path without changing any timeout or Netflix timing budget.
-        const [{ data: cookieRow, error: cookieErr }, { error: runningErr }] = await Promise.all([
-          supabase
-            .from("imap_cookies")
-            .select("content, format")
-            .eq("imap_user", ev.imap_user)
-            .maybeSingle(),
-          supabase.from("tv_login_events").update({
-            status: "running",
-            github_run_url: String(p?.run_url || "") || null,
-            metadata: { ...((ev.metadata as any) || {}), runnerStartedAt: new Date().toISOString() },
-          }).eq("id", eventId),
-        ]);
-        if (cookieErr) throw new Error(cookieErr.message);
-        if (runningErr) throw new Error(runningErr.message);
+        const { data: cookieRow } = await supabase
+          .from("imap_cookies")
+          .select("content, format")
+          .eq("imap_user", ev.imap_user)
+          .maybeSingle();
         if (!cookieRow?.content) throw new Error("No cookies stored for account");
+        // Mark as running
+        await supabase.from("tv_login_events").update({
+          status: "running",
+          github_run_url: String(p?.run_url || "") || null,
+          metadata: { ...((ev.metadata as any) || {}), runnerStartedAt: new Date().toISOString() },
+        }).eq("id", eventId);
         return new Response(JSON.stringify({
           success: true,
           event_id: ev.id,

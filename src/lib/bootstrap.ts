@@ -14,34 +14,7 @@ export type FreeAvatarCooldown = { minutes: number; lastAt: string | null };
 export type LocationPolicy = { required: boolean };
 export type TvFeature = { enabled: boolean };
 export type ContactInfo = { telegram: string; whatsapp: string; email: string; note: string };
-export type DeveloperLink = { id: string; label: string; url: string; role?: string; description?: string; avatar?: string };
-export type BootstrapResult = { users: any[]; recaptcha: any; workerUrls: string[]; emailFilters?: EmailFilters; maintenance?: MaintenanceInfo; avatarBaseUrl?: string; freeAvatarCooldown?: FreeAvatarCooldown; locationPolicy?: LocationPolicy; tvFeature?: TvFeature; contactInfo?: ContactInfo; developerLinks?: DeveloperLink[]; developerButtonLabel?: string; serverNow?: string };
-
-// Module-level developer-links cache — read synchronously by the header pill so
-// the "Developer" button paints instantly from the bootstrap cache.
-let currentDeveloperLinks: DeveloperLink[] = [];
-let currentDeveloperButtonLabel = "Links";
-export function getDeveloperLinks(): DeveloperLink[] { return currentDeveloperLinks; }
-export function getDeveloperButtonLabel(): string { return currentDeveloperButtonLabel; }
-export function normalizeDeveloperLinks(value: any): DeveloperLink[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((l) => l && typeof l === "object" && typeof l.url === "string" && /^https?:\/\//i.test(String(l.url).trim()))
-    .slice(0, 24)
-    .map((l: any, i: number) => ({
-      id: String(l.id || `dev_${i}`),
-      label: String(l.label || "Link"),
-      url: String(l.url).trim(),
-      role: String(l.role || ""),
-      description: String(l.description || ""),
-      avatar: String(l.avatar || ""),
-    }));
-}
-export function setDeveloperLinks(links: any, buttonLabel?: any) {
-  currentDeveloperLinks = normalizeDeveloperLinks(links);
-  currentDeveloperButtonLabel = (typeof buttonLabel === "string" && buttonLabel.trim()) ? buttonLabel.trim() : "Links";
-  try { window.dispatchEvent(new CustomEvent("app:developer-links")); } catch {}
-}
+export type BootstrapResult = { users: any[]; recaptcha: any; workerUrls: string[]; emailFilters?: EmailFilters; maintenance?: MaintenanceInfo; avatarBaseUrl?: string; freeAvatarCooldown?: FreeAvatarCooldown; locationPolicy?: LocationPolicy; tvFeature?: TvFeature; contactInfo?: ContactInfo; serverNow?: string };
 
 // Module-level free-avatar cooldown cache — kept in sync with bootstrap.
 let currentFreeAvatarCooldown: FreeAvatarCooldown = { minutes: 5, lastAt: null };
@@ -150,9 +123,8 @@ export function readBootstrapCache(): BootstrapResult | null {
     const contactInfo: ContactInfo = parsed.contactInfo && typeof parsed.contactInfo === "object"
       ? { telegram: String(parsed.contactInfo.telegram || ""), whatsapp: String(parsed.contactInfo.whatsapp || ""), email: String(parsed.contactInfo.email || ""), note: String(parsed.contactInfo.note || "") }
       : { telegram: "", whatsapp: "", email: "", note: "" };
-    const result = { users: sanitizeBootstrapUsers(parsed.users || []), recaptcha: parsed.recaptcha, workerUrls: parsed.workerUrls || [], emailFilters: DEFAULT_EMAIL_FILTERS, maintenance: parsed.maintenance, avatarBaseUrl: parsed.avatarBaseUrl || "", freeAvatarCooldown: parsed.freeAvatarCooldown || { minutes: 5, lastAt: null }, locationPolicy: { required: parsed.locationPolicy?.required !== false }, tvFeature: { enabled: parsed.tvFeature?.enabled !== false }, contactInfo, developerLinks: normalizeDeveloperLinks(parsed.developerLinks), developerButtonLabel: typeof parsed.developerButtonLabel === "string" ? parsed.developerButtonLabel : "Links" };
+    const result = { users: sanitizeBootstrapUsers(parsed.users || []), recaptcha: parsed.recaptcha, workerUrls: parsed.workerUrls || [], emailFilters: DEFAULT_EMAIL_FILTERS, maintenance: parsed.maintenance, avatarBaseUrl: parsed.avatarBaseUrl || "", freeAvatarCooldown: parsed.freeAvatarCooldown || { minutes: 5, lastAt: null }, locationPolicy: { required: parsed.locationPolicy?.required !== false }, tvFeature: { enabled: parsed.tvFeature?.enabled !== false }, contactInfo };
     setFreeAvatarCooldown(result.freeAvatarCooldown);
-    setDeveloperLinks(result.developerLinks, result.developerButtonLabel);
     setAvatarBaseUrl(result.avatarBaseUrl);
     return result;
   } catch { return null; }
@@ -260,10 +232,9 @@ export async function bootstrapFromSupabase(opts?: { force?: boolean }): Promise
     const contactInfo: ContactInfo = data.contactInfo && typeof data.contactInfo === "object"
       ? { telegram: String(data.contactInfo.telegram || ""), whatsapp: String(data.contactInfo.whatsapp || ""), email: String(data.contactInfo.email || ""), note: String(data.contactInfo.note || "") }
       : { telegram: "", whatsapp: "", email: "", note: "" };
-    const result: BootstrapResult = { users: sanitizeBootstrapUsers(data.users || []), recaptcha: data.recaptcha, workerUrls: data.workerUrls || [], emailFilters: normalizeEmailFilters(data.emailFilters), maintenance: data.maintenance || { enabled: false }, avatarBaseUrl: data.avatarBaseUrl || "", freeAvatarCooldown: data.freeAvatarCooldown || { minutes: 5, lastAt: null }, locationPolicy: { required: data.locationPolicy?.required !== false }, tvFeature: { enabled: data.tvFeature?.enabled !== false }, contactInfo, developerLinks: normalizeDeveloperLinks(data.developerLinks), developerButtonLabel: typeof data.developerButtonLabel === "string" ? data.developerButtonLabel : "Links", serverNow: typeof data.serverNow === "string" ? data.serverNow : undefined };
+    const result: BootstrapResult = { users: sanitizeBootstrapUsers(data.users || []), recaptcha: data.recaptcha, workerUrls: data.workerUrls || [], emailFilters: normalizeEmailFilters(data.emailFilters), maintenance: data.maintenance || { enabled: false }, avatarBaseUrl: data.avatarBaseUrl || "", freeAvatarCooldown: data.freeAvatarCooldown || { minutes: 5, lastAt: null }, locationPolicy: { required: data.locationPolicy?.required !== false }, tvFeature: { enabled: data.tvFeature?.enabled !== false }, contactInfo, serverNow: typeof data.serverNow === "string" ? data.serverNow : undefined };
     setAvatarBaseUrl(result.avatarBaseUrl);
     setEmailFilters(result.emailFilters || DEFAULT_EMAIL_FILTERS);
-    setDeveloperLinks(result.developerLinks, result.developerButtonLabel);
     setFreeAvatarCooldown(result.freeAvatarCooldown);
     writeBootstrapCache(result);
     return result;
@@ -329,11 +300,8 @@ export type AppNotification = {
   kind?: "flash" | string;
   sub_kind?: string | null;
   locked?: boolean;
-  show_frequency?: "once" | "session" | string | null;
+  show_frequency?: "once" | "always" | "session" | "daily" | string | null;
   mode?: "popup" | "silent" | "banner" | string | null;
-  sort_order?: number | null;
-  updated_at?: string | null;
-
   action_url?: string | null;
   action_label?: string | null;
   action2_url?: string | null;
@@ -498,101 +466,37 @@ export async function adminDeleteNotificationForUser(notificationId: string, use
   await callManage("admin_delete_notification_for_user", { notification_id: notificationId, user_id: userId });
 }
 
-// ---------- Auto-popup frequency bookkeeping ----------
-// Two simple modes only:
-//   "once"    → popup shown a single time per profile (localStorage)
-//   "session" → popup shown once per login session (sessionStorage, keyed to token)
-// The stored value is the notification's edit stamp, so when an admin edits a
-// notification it counts as new content and pops again.
+// Auto-popup dedupe: scoped per logged-in profile. A global key made newly-created
+// profiles skip the first notification if the same browser had already popped it.
+const POPUP_SEEN_KEY = "notif_popup_seen_v1";
 
-const POPUP_ONCE_KEY = "notif_popup_once_v2";
-const POPUP_SESSION_KEY = "notif_popup_session_v2";
-
-function currentUserId(): string | null {
+function popupSeenKey(): string {
   try {
     const rawUser = sessionGet("user" as any);
-    return rawUser ? JSON.parse(rawUser)?.id || null : null;
-  } catch { return null; }
-}
-
-function onceKey(): string {
-  const uid = currentUserId();
-  return uid ? `${POPUP_ONCE_KEY}:${uid}` : POPUP_ONCE_KEY;
-}
-
-function sessionKey(): string {
-  const uid = currentUserId();
-  let sessionId = "";
-  try {
-    // Access tokens rotate during one login. Use the stable session family (or
-    // start timestamp) so a refresh cannot show the same popup a second time.
-    sessionId = sessionGet("session_family_id" as any)
-      || sessionGet("session_started_at" as any)
-      || "active";
+    const userId = rawUser ? JSON.parse(rawUser)?.id : null;
+    if (userId) return `${POPUP_SEEN_KEY}:${userId}`;
+    const token = sessionGet("session_token" as any);
+    if (token) return `${POPUP_SEEN_KEY}:token:${String(token).slice(0, 16)}`;
   } catch {}
-  return `${POPUP_SESSION_KEY}:${uid || "anon"}:${sessionId}`;
+  return POPUP_SEEN_KEY;
 }
 
-function readMap(store: Storage | undefined, key: string): Record<string, string> {
+export function getPoppedIds(): Set<string> {
   try {
-    const raw = store?.getItem(key);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch { return {}; }
+    const raw = localStorage.getItem(popupSeenKey());
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
 }
-
-function writeMap(store: Storage | undefined, key: string, map: Record<string, string>) {
+export function markPopped(id: string) {
   try {
-    const entries = Object.entries(map).slice(-300);
-    store?.setItem(key, JSON.stringify(Object.fromEntries(entries)));
+    const s = getPoppedIds();
+    s.add(id);
+    const arr = Array.from(s).slice(-200);
+    localStorage.setItem(popupSeenKey(), JSON.stringify(arr));
   } catch {}
 }
-
-export function notifStamp(n: Pick<AppNotification, "updated_at" | "created_at">): string {
-  return String((n as any).updated_at || n.created_at || "");
-}
-
-function isSessionMode(n: AppNotification): boolean {
-  const f = String(n.show_frequency || "once");
-  return f === "session" || f === "always" || f === "daily";
-}
-
-/** Has this notification's popup already been shown under its own rule? */
-export function hasPoppedNotif(n: AppNotification): boolean {
-  const stamp = notifStamp(n);
-  if (isSessionMode(n)) {
-    return readMap(typeof sessionStorage === "undefined" ? undefined : sessionStorage, sessionKey())[n.id] === stamp;
-  }
-  return readMap(typeof localStorage === "undefined" ? undefined : localStorage, onceKey())[n.id] === stamp;
-}
-
-/** Record that the popup was shown (respecting once vs per-session scope). */
-export function markNotifPopped(n: AppNotification): void {
-  const stamp = notifStamp(n);
-  if (isSessionMode(n)) {
-    const store = typeof sessionStorage === "undefined" ? undefined : sessionStorage;
-    const key = sessionKey();
-    const map = readMap(store, key);
-    map[n.id] = stamp;
-    writeMap(store, key, map);
-    return;
-  }
-  const store = typeof localStorage === "undefined" ? undefined : localStorage;
-  const key = onceKey();
-  const map = readMap(store, key);
-  map[n.id] = stamp;
-  writeMap(store, key, map);
-}
-
-/** Admin-defined display order: explicit order first, then newest content. */
-export function compareNotifications(a: AppNotification, b: AppNotification): number {
-  const oa = typeof a.sort_order === "number" ? a.sort_order : Number.MAX_SAFE_INTEGER;
-  const ob = typeof b.sort_order === "number" ? b.sort_order : Number.MAX_SAFE_INTEGER;
-  if (oa !== ob) return oa - ob;
-  return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-}
-
 
 
 

@@ -63,34 +63,8 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Hard network timeouts. Without these, a stalled connection (flaky mobile
-// network, hung edge cold start) leaves the UI spinning forever.
-const HANDSHAKE_TIMEOUT_MS = 8000;
-const REQUEST_TIMEOUT_MS = 12000;
-// IMAP refresh includes a real TLS connection to Gmail. Give that single
-// request a small amount of extra headroom, but never replay it: replaying a
-// timed-out refresh starts a second IMAP run while the first is still alive.
-const EMAIL_REFRESH_TIMEOUT_MS = 15000;
-
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (e: any) {
-    if (e?.name === "AbortError") throw new Error("NetworkError: request timed out");
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-
 function cleanTransportError(err: unknown): Error {
   const msg = err instanceof Error ? err.message : String(err || "");
-  if (/timed out/i.test(msg)) {
-    return new Error("Request timed out. Please check your connection and try again.");
-  }
   if (/handshake\s*429|rate limited/i.test(msg)) {
     return new Error("Security connection is busy. Please try again in a few seconds.");
   }
@@ -144,7 +118,7 @@ async function doHandshake(): Promise<Session> {
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      res = await fetchWithTimeout(`${fnBase()}/crypto-handshake`, {
+      res = await fetch(`${fnBase()}/crypto-handshake`, {
         method: "POST",
         headers: {
           "Content-Type": CT_BINARY,
@@ -152,7 +126,7 @@ async function doHandshake(): Promise<Session> {
           apikey: anonKey(),
         },
         body: req,
-      }, HANDSHAKE_TIMEOUT_MS);
+      });
       if (res.status !== 429 && res.status < 500) break;
     } catch (e) {
       lastErr = e;
@@ -285,12 +259,11 @@ export async function secureFetchJson(
   // gunzip and show the generic secure-connection toast.
   if (canGunzipResponse()) headers["x-accept-encoding"] = "gzip";
 
-  const requestTimeout = functionName === "fetch-emails" ? EMAIL_REFRESH_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
-  const res = await fetchWithTimeout(`${fnBase()}/${functionName}`, {
+  const res = await fetch(`${fnBase()}/${functionName}`, {
     method: "POST",
     headers,
     body: frame,
-  }, requestTimeout);
+  });
   const ct = (res.headers.get("content-type") || "").toLowerCase();
   if (!ct.includes(CT_BINARY)) {
     resetSession();
@@ -345,9 +318,6 @@ export async function invokeEdge(
     return await secureFetchJson(functionName, body, opts);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // An email refresh performs stateful IMAP work. Never replay it after the
-    // request was dispatched: the original Edge invocation may still finish.
-    if (functionName === "fetch-emails") throw cleanTransportError(err);
     if (/handshake\s*429|rate limited/i.test(msg)) {
       resetSession();
       await wait(700 + Math.floor(Math.random() * 500));
@@ -357,16 +327,6 @@ export async function invokeEdge(
         throw cleanTransportError(retryErr);
       }
     }
-    if (/timed out/i.test(msg) && functionName !== "fetch-emails") {
-      // One quick retry only — never cascade timeouts into minutes of waiting.
-      resetSession();
-      try {
-        return await secureFetchJson(functionName, body, opts);
-      } catch (retryErr) {
-        throw cleanTransportError(retryErr);
-      }
-    }
-    if (/timed out/i.test(msg)) throw cleanTransportError(err);
     if (/handshake|unknown session|bad frame|non-binary|OperationError|Failed to fetch|NetworkError|stale request|replay|origin mismatch/i.test(msg)) {
       resetSession();
       try {

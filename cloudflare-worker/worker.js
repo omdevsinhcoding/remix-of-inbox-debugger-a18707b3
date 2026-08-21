@@ -99,8 +99,6 @@ async function hydrateSessionFromSupabase(env, token, request) {
   if (!token) return null;
   const key = supabaseKey(env);
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
     const res = await fetch(`${supabaseUrl(env)}/functions/v1/manage-app`, {
       method: "POST",
       headers: {
@@ -111,8 +109,7 @@ async function hydrateSessionFromSupabase(env, token, request) {
         ...(request?.headers?.get("user-agent") ? { "User-Agent": request.headers.get("user-agent") } : {}),
       },
       body: JSON.stringify({ action: "me" }),
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeout));
+    });
     if (!res.ok) return null;
     const data = await res.json().catch(() => null);
     const user = data?.user;
@@ -180,7 +177,6 @@ const DEFAULT_EMAIL_FILTERS = { showSignInCodes: true, showPasswordResets: true,
 const WORKER_ACCOUNT_UPDATE_RE = /(attention|action (needed|required)|account (information|info|details) (was |has been )?(changed|updated)|changes? to your account|email (address )?(was |has been )?(changed|updated)|new email address|email verification|verification email|verify (your )?(email address|phone number|mobile number|account)|confirm (your )?(email address|phone number|mobile number|account change|account)|membership (was |has been )?(cancell?ed|updated|paused)|account (was |has been )?(cancell?ed|deleted|closed|paused|on hold)|we[’']re sorry to see you go|payment (received|method|was|has been|declined|failed|updated|changed)|mobile (number )?(confirm|confirmed|verify|verified|update|updated)|phone (number )?(confirm|confirmed|verify|verified|update|updated)|verify (your )?(phone|mobile|email)|verify your email address|action needed: verify|request to make a change|update your account|make (a |any )?(change|changes) to your account)/i;
 const WORKER_PASSWORD_RESET_RE = /(password (was |has been )?(changed|reset|updated)|reset your password|forgot password|password reset|new password|account recovery)/i;
 const WORKER_SIGNIN_RE = /(sign[\s-]?in code|new sign[\s-]?in|new device|temporary access code|is using your account|access your account|verification code|login code|enter this code|otp)/i;
-const WORKER_HOUSEHOLD_RE = /(netflix household|your household|update your household|household (has been|was|is) (confirmed|updated)|part of your (netflix )?household|watching on a tv|traveling|travelling|new device|new sign[\s-]?in|signed in on|is this you|confirm (this|your) device|approve (this|your) device|watch instead|yes,? this was me)/i;
 
 function normalizeEmailFilters(value) {
   const v = value && typeof value === "object" ? value : {};
@@ -223,8 +219,6 @@ async function readWorkerEmailFilters(env, rawToken = "") {
 
 function classifyWorkerEmail(email) {
   const text = `${email?.subject || ""} ${email?.preview || ""}`;
-  // Household/device verification must outrank broad account-update wording.
-  if (WORKER_HOUSEHOLD_RE.test(text)) return "household";
   if (WORKER_ACCOUNT_UPDATE_RE.test(text)) return "account_update";
   if (WORKER_PASSWORD_RESET_RE.test(text)) return "password_reset";
   if (email?.otp || WORKER_SIGNIN_RE.test(text)) return "signin";
@@ -242,6 +236,7 @@ function applyWorkerFilters(list, filters, session) {
     if (hideSignin && cat === "signin") return false;
     if (hideReset && cat === "password_reset") return false;
     if (hideAccountUpdate && cat === "account_update") return false;
+    if (hideReset && hideAccountUpdate && cat === "other") return false;
     return true;
   });
 }
@@ -407,7 +402,7 @@ export default {
     // Cache buster called after any mark/read/delete write — invalidates
     // the user's KV entry so the next poll picks up the change immediately.
     if (url.pathname === "/api/notifications/invalidate" && request.method === "POST") {
-      return handleNotificationsInvalidate(env, session, sessionToken);
+      return handleNotificationsInvalidate(env, session);
     }
 
     // Public bootstrap — cached at the edge with ETag. This is the highest-
@@ -438,6 +433,47 @@ export default {
     return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
   },
 
+  // Cron/scheduled handler — same as the uploaded worker: proxy sync to Supabase, then refresh KV.
+  async scheduled(event, env, ctx) {
+    console.log("[cron] Scheduled sync triggered at", new Date().toISOString());
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${supabaseKey(env)}`,
+        "apikey": supabaseKey(env),
+        ...(env.CRON_SHARED_SECRET ? { "X-Cron-Secret": env.CRON_SHARED_SECRET } : {}),
+      };
+
+      const res = await fetch(`${supabaseUrl(env)}/functions/v1/fetch-emails`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ mode: "sync", source: "cron" }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("[cron] Sync failed:", res.status, text);
+        return;
+      }
+
+      const cacheRes = await fetch(`${supabaseUrl(env)}/functions/v1/fetch-emails`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ mode: "cache" }),
+      });
+
+      if (cacheRes.ok) {
+        const cacheData = await cacheRes.text();
+        await Promise.all([
+          kvPut(env, `${CACHE_KEY}:all`, cacheData),
+          kvPut(env, `${CACHE_TIMESTAMP_KEY}:all`, Date.now().toString()),
+        ]);
+        console.log("[cron] Cache updated successfully");
+      }
+    } catch (err) {
+      console.error("[cron] Error:", err);
+    }
+  },
 };
 
 function diagHeaders(extra = {}) {
@@ -978,7 +1014,7 @@ async function handleInboxHtml(request, env, _session, rawToken, ctx) {
 // ==================== Notifications cache ====================
 // Per-user KV cache in front of the notifications-list edge function.
 // TTL 60 s, invalidated on any mark_read / delete client-side write.
-const NOTIF_KEY_PREFIX = "notifs:v2:session:";
+const NOTIF_KEY_PREFIX = "notifs:v1:user:";
 const NOTIF_TTL_SECONDS = 60;
 
 function notifHeaders(extra = {}) {
@@ -1008,7 +1044,7 @@ async function handleNotificationsList(request, env, session, rawToken, ctx) {
   const clientEtag = typeof body?.if_etag === "string" ? body.if_etag : null;
 
   const kv = getKV(env);
-  const cacheKey = `${NOTIF_KEY_PREFIX}${session.userId}:${rawToken.slice(-24)}`;
+  const cacheKey = `${NOTIF_KEY_PREFIX}${session.userId}`;
 
   // ---- Cache lookup ----
   if (kv) {
@@ -1077,15 +1113,15 @@ async function handleNotificationsList(request, env, session, rawToken, ctx) {
   }
 }
 
-async function handleNotificationsInvalidate(env, session, rawToken) {
+async function handleNotificationsInvalidate(env, session) {
   if (!session?.userId) {
     return new Response(JSON.stringify({ success: false, error: "session required" }), {
       status: 401, headers: notifHeaders(),
     });
   }
   const primary = env.EMAIL_CACHE_V2 || env.EMAIL_CACHE;
-  if (primary && rawToken) {
-    try { await primary.delete(`${NOTIF_KEY_PREFIX}${session.userId}:${rawToken.slice(-24)}`); } catch {}
+  if (primary) {
+    try { await primary.delete(`${NOTIF_KEY_PREFIX}${session.userId}`); } catch {}
   }
   return new Response(JSON.stringify({ success: true }), { headers: notifHeaders() });
 }
@@ -1193,11 +1229,12 @@ async function handleBootstrapPublic(request, env, ctx) {
   }
 }
 
-// ==================== Inbox list_delta proxy (Operation #2) ====================
-// Inbox responses are intentionally never cached. Baselines are mutable too:
-// a manual IMAP refresh can commit a row immediately after the snapshot, and
-// multiple Worker URLs have independent KV namespaces. Serving either cached
-// snapshot made a newly arrived message disappear until that Worker's TTL.
+// ==================== Inbox list_delta cache (Operation #2) ====================
+// Per-user KV cache in front of manage-app.list_delta. Cursor-based diffs
+// mean 99% of foreground polls return an empty {rows:[],removedIds:[]} body
+// served from KV within 30s. New mail arriving flips the cursor, so the next
+// poll misses cache and pulls the fresh diff; there is no coherency risk
+// beyond the 30-second TTL.
 const INBOX_KEY_PREFIX = "inbox:v1:user:";
 const INBOX_TTL_SECONDS = 30;
 
@@ -1232,8 +1269,7 @@ async function handleInboxList(request, env, session, rawToken, ctx) {
   const kv = getKV(env);
   const cacheKey = `${INBOX_KEY_PREFIX}${session.userId}:s${since}:b${baseline ? 1 : 0}:l${limit}`;
 
-  const cacheable = false;
-  if (kv && cacheable) {
+  if (kv) {
     const raw = await kvGet(env, cacheKey);
     if (raw) {
       let cached = null;
@@ -1269,7 +1305,7 @@ async function handleInboxList(request, env, session, rawToken, ctx) {
     }
     let parsed = null;
     try { parsed = JSON.parse(text); } catch {}
-    if (kv && cacheable && parsed?.success) {
+    if (kv && parsed?.success) {
       const store = { body: text, at: Date.now() };
       const write = (async () => {
         try {

@@ -17,7 +17,6 @@ import { listNotificationsWithEtag, type AppNotification } from "./bootstrap";
 type Listener = (items: AppNotification[], loading: boolean) => void;
 
 const POLL_INTERVAL_MS = 90_000;
-const CACHE_PREFIX = "notifications_snapshot_v1:";
 
 let items: AppNotification[] = [];
 let etag: string | null = null;
@@ -25,29 +24,10 @@ let loading = false;
 let inflight = false;
 let currentUserId: string | null = null;
 let version = 0;
-let requestId = 0;
-let activeRequestId = 0;
 const listeners = new Set<Listener>();
 
 let pollTimer: number | null = null;
 let visibilityBound = false;
-
-function cacheKey(userId: string): string {
-  return `${CACHE_PREFIX}${userId}`;
-}
-
-function readCache(userId: string | null): AppNotification[] {
-  if (!userId || typeof localStorage === "undefined") return [];
-  try {
-    const parsed = JSON.parse(localStorage.getItem(cacheKey(userId)) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch { return []; }
-}
-
-function writeCache(userId: string | null, next: AppNotification[]): void {
-  if (!userId || typeof localStorage === "undefined") return;
-  try { localStorage.setItem(cacheKey(userId), JSON.stringify(next.slice(0, 100))); } catch {}
-}
 
 function emit() {
   for (const fn of listeners) {
@@ -58,8 +38,6 @@ function emit() {
 export async function refreshNotifications(force = false): Promise<void> {
   if (inflight) return;
   inflight = true;
-  const runRequestId = ++requestId;
-  activeRequestId = runRequestId;
   const runVersion = version;
   const runUserId = currentUserId;
   const wasEmpty = items.length === 0;
@@ -70,7 +48,6 @@ export async function refreshNotifications(force = false): Promise<void> {
     if (!res.unchanged) {
       items = res.notifications;
       etag = res.etag;
-      writeCache(currentUserId, items);
       emit();
     } else if (res.etag && res.etag !== etag) {
       etag = res.etag;
@@ -78,13 +55,10 @@ export async function refreshNotifications(force = false): Promise<void> {
   } catch {
     // swallow — surface via empty state, never leave the spinner stuck.
   } finally {
-    // A request from the previous profile/session must never clear the state of
-    // a newer request. This was the remaining race behind an endless spinner.
-    // Always release the in-flight lock, even for a superseded request —
-    // returning early here previously could leave the store permanently
-    // locked, which is what showed as a never-ending notification spinner.
+    // ALWAYS clear inflight + loading, even if the profile switched mid-flight.
+    // Previously the early-return here left `inflight=true` forever → new
+    // profile's bell spun with no new fetch ever firing.
     inflight = false;
-    if (runRequestId !== activeRequestId) return;
     if (loading) {
       loading = false;
       emit();
@@ -96,12 +70,10 @@ export async function refreshNotifications(force = false): Promise<void> {
 export function resetNotifications(userId: string | null = null): void {
   currentUserId = userId;
   version++;
-  // Render the last server snapshot on the first dashboard frame, then refresh.
-  items = readCache(userId);
+  items = [];
   etag = null;
   loading = false;
   inflight = false;
-  activeRequestId = ++requestId;
   emit();
 }
 
@@ -136,7 +108,7 @@ export function subscribeNotifications(fn: Listener, userId: string | null = nul
   startPollingIfNeeded();
   // Any first subscriber for the current profile triggers fetch; `inflight`
   // dedupes bell + auto-popup mounting together.
-  if (!inflight) {
+  if (items.length === 0 && !inflight) {
     void refreshNotifications(true);
   }
   return () => {
