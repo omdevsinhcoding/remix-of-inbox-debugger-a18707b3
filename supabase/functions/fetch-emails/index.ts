@@ -649,13 +649,15 @@ async function fetchFromAccount(
           console.log(`[${accountLabel}] ${mailboxPath} Netflix search failed:`, searchErr);
         }
       }
-      const hasUncachedCandidate = netflixUids.some((uid) => !isCached(uid));
-
-      // Gmail can expose a just-delivered UID shortly after accepting the mail.
-      // Recheck once only on INBOX and only when there is still no new candidate.
-      if (quickRefresh && allowIndexingGrace && !hasUncachedCandidate && hasBudget()) {
-        await new Promise((resolve) => setTimeout(resolve, 900));
+      // Gmail can accept a message before the selected mailbox reports its new
+      // EXISTS count. Merely sleeping and re-reading client.mailbox.exists does
+      // not refresh that value: an IMAP command must force a server round trip.
+      // Always perform one short INBOX recheck, even if another uncached mail was
+      // found, otherwise that older mail can mask a brand-new sign-in code.
+      if (quickRefresh && allowIndexingGrace && hasBudget()) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
         if (hasBudget()) {
+          try { await client.noop(); } catch {}
           const refreshedExists = Number((client.mailbox as any)?.exists || totalMessages);
           const tailStart = Math.max(1, refreshedExists - (FAST_REFRESH_SCAN_COUNT - 1));
           try {
@@ -768,9 +770,11 @@ async function fetchFromAccount(
     // INBOX hit for account A must not prevent an archived/filtered message for
     // account B from being discovered in All Mail.
     await scanMailbox("INBOX", "", true);
-    const labelsFoundInInbox = new Set(emails.map((email) => String(email?.account_label || "").trim()).filter(Boolean));
-    const logicalAccountStillMissing = accountVariants.some((account) => !labelsFoundInInbox.has(account.label));
-    if (quickRefresh && logicalAccountStillMissing && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
+    // Gmail rules can archive Netflix household messages immediately, so they
+    // exist in All Mail but not INBOX. An unrelated INBOX sign-in hit must not
+    // suppress this pass. It remains bounded and uses only the time left inside
+    // the same fixed 8-second budget.
+    if (quickRefresh && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
       try {
         await scanMailbox("[Gmail]/All Mail", "all:", false);
       } catch (fallbackErr) {
