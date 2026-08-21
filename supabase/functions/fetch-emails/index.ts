@@ -534,11 +534,15 @@ async function fetchFromAccount(
     auth: { user: imapUser, pass: imapPassword },
     logger: false,
     connectionTimeout: connectBudgetMs,
-    socketTimeout: quickRefresh ? 8000 : 14000,
+    // The explicit connect/scan budgets below are the user-facing deadline.
+    // Keep ImapFlow's inactivity watchdog above that deadline so it cannot
+    // abort a slow Gmail TLS greeting before our bounded timer does.
+    socketTimeout: quickRefresh ? 20000 : 30000,
     greetingTimeout: quickRefresh ? 7000 : 8000,
   });
 
   const closeClient = () => {
+    if (!(client as any).usable) return;
     try {
       const closing: any = client.close();
       if (closing && typeof closing.catch === "function") void closing.catch(() => {});
@@ -617,26 +621,6 @@ async function fetchFromAccount(
         if (uncachedUids.length >= fetchLimit) break;
       }
 
-      // Route a shared physical inbox by envelope before downloading bodies.
-      if (quickRefresh && uncachedUids.length > 1 && hasBudget()) {
-        const owned: number[] = [];
-        const foreign: number[] = [];
-        try {
-          for await (const msg of client.fetch(uncachedUids.slice(0, 60).join(","), { envelope: true, uid: true }, { uid: true })) {
-            if (!hasBudget()) break;
-            const toAddr = envelopeRecipients(msg.envelope);
-            if (selectLogicalAccount(toAddr, accountVariants)) owned.push(msg.uid);
-            else foreign.push(msg.uid);
-          }
-          if (owned.length > 0 || foreign.length > 0) {
-            recipientSkipped += foreign.length;
-            uncachedUids = owned.sort((a, b) => b - a);
-          }
-        } catch (screenErr) {
-          console.log(`[${accountLabel}] ${mailboxPath} envelope pre-screen failed:`, screenErr);
-        }
-      }
-
       const eligibleByAccount = new Map(accountVariants.map((acc) => [acc.label, 0]));
       const allAccountQuotasFilled = () => accountVariants.every(
         (acc) => (eligibleByAccount.get(acc.label) || 0) >= QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT,
@@ -699,20 +683,9 @@ async function fetchFromAccount(
   };
 
   try {
-    await Promise.race([
-      client.connect(),
-      new Promise<never>((_, reject) => {
-        connectTimer = setTimeout(() => {
-          timedOut = true;
-          closeClient();
-          reject(new Error(`IMAP connect exceeded ${connectBudgetMs}ms`));
-        }, connectBudgetMs) as unknown as number;
-      }),
-    ]);
-    if (connectTimer !== undefined) {
-      clearTimeout(connectTimer);
-      connectTimer = undefined;
-    }
+    // ImapFlow's connectionTimeout performs the abort. Closing a socket from a
+    // competing timer before it is usable emits an uncaught event-loop error.
+    await client.connect();
     console.log(`[${accountLabel}] IMAP connected to ${imapHost}`);
     startedAt = Date.now();
     // Closing the socket is intentional: a boolean timeout cannot interrupt a
