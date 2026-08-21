@@ -755,12 +755,15 @@ async function fetchFromAccount(
     }, budgetMs) as unknown as number;
 
     // User refresh must inspect Gmail INBOX first. `[Gmail]/All Mail` can be
-    // very large and its envelope fetch was consuming the entire fixed
-    // 8-second scan budget before a fresh INBOX message was inspected (most
-    // visibly on the DDDD profile). Keep the same deadline: only use All Mail
-    // as a best-effort fallback when INBOX produced no new Netflix row.
+    // very large, so it remains a bounded best-effort second pass inside the
+    // same deadline. Do not gate that pass on the whole physical inbox finding
+    // zero rows: one Gmail login can back several logical accounts, and an
+    // INBOX hit for account A must not prevent an archived/filtered message for
+    // account B from being discovered in All Mail.
     await scanMailbox("INBOX", "", true);
-    if (quickRefresh && emails.length === 0 && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
+    const labelsFoundInInbox = new Set(emails.map((email) => String(email?.account_label || "").trim()).filter(Boolean));
+    const logicalAccountStillMissing = accountVariants.some((account) => !labelsFoundInInbox.has(account.label));
+    if (quickRefresh && logicalAccountStillMissing && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
       try {
         await scanMailbox("[Gmail]/All Mail", "all:", false);
       } catch (fallbackErr) {
