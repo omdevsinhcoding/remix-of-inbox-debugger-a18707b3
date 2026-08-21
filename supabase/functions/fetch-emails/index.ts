@@ -67,15 +67,11 @@ const QUICK_REFRESH_SKIP_WINDOW = 100;
 const QUICK_REFRESH_MAX_ELIGIBLE_PER_ACCOUNT = 25;
 
 
-// Budgets are measured AFTER the IMAP connection is established (Gmail's TLS
-// handshake + greeting alone can take 5-9s, which used to eat the whole budget
-// and made every quick refresh scan 0 messages).
+// A click refresh has one wall-clock budget, including TLS, mailbox selection,
+// and message fetch. Keep it below the browser's 12-second transport deadline.
 const PER_ACCOUNT_TIMEOUT_MS = 12000;
 const FAST_REFRESH_TIMEOUT_MS = 8000;
-// Connection time is intentionally separate from the mailbox scan budget.
-// Gmail TLS/greeting can occasionally take 6-9s; charging that against the
-// scan left no time to inspect INBOX and made fresh mail appear "missing".
-const FAST_REFRESH_CONNECT_TIMEOUT_MS = 7000;
+const FAST_REFRESH_CONNECT_TIMEOUT_MS = 6500;
 // Manual refresh must cover a busy Gmail inbox without parsing unrelated mail.
 const FAST_REFRESH_SCAN_COUNT = 20;
 const STALE_DAYS = 60;
@@ -599,6 +595,12 @@ async function fetchFromAccount(
     if (!hasBudget()) return;
     const lock = await client.getMailboxLock(mailboxPath);
     try {
+      // SELECT can return before Gmail publishes a just-delivered message's
+      // EXISTS update. Force one cheap round trip before reading the count so
+      // the first bounded tail scan includes the newest OTP/household message.
+      if (quickRefresh && allowIndexingGrace && hasBudget()) {
+        try { await client.noop(); } catch {}
+      }
       const totalMessages = Number((client.mailbox as any)?.exists || 0);
       if (totalMessages <= 0 || !hasBudget()) return;
 
@@ -649,32 +651,6 @@ async function fetchFromAccount(
           console.log(`[${accountLabel}] ${mailboxPath} Netflix search failed:`, searchErr);
         }
       }
-      const hasUncachedCandidate = netflixUids.some((uid) => !isCached(uid));
-
-      // Gmail can expose a just-delivered UID shortly after accepting the mail.
-      // Recheck once only on INBOX and only when there is still no new candidate.
-      if (quickRefresh && allowIndexingGrace && !hasUncachedCandidate && hasBudget()) {
-        await new Promise((resolve) => setTimeout(resolve, 900));
-        if (hasBudget()) {
-          const refreshedExists = Number((client.mailbox as any)?.exists || totalMessages);
-          const tailStart = Math.max(1, refreshedExists - (FAST_REFRESH_SCAN_COUNT - 1));
-          try {
-            for await (const message of client.fetch(`${tailStart}:*`, { envelope: true, uid: true })) {
-              if (!hasBudget()) break;
-              const fromAddr = message.envelope?.from?.[0]?.address?.toLowerCase() || "";
-              const envelopeMessageId = String(message.envelope?.messageId || "").trim().toLowerCase();
-              if (/@([a-z0-9-]+\.)*netflix\.com$/.test(fromAddr)
-                && !isCached(message.uid)
-                && !(envelopeMessageId && cachedMessageIds.has(envelopeMessageId))) {
-                netflixUids.push(message.uid);
-              }
-            }
-          } catch (tailErr) {
-            console.log(`[${accountLabel}] Final ${mailboxPath} tail scan failed:`, tailErr);
-          }
-        }
-      }
-
       const candidates = Array.from(new Set(netflixUids)).sort((a, b) => b - a);
       const scanLimit = quickRefresh ? Math.min(candidates.length, 250) : Math.min(Math.max(candidates.length, maxMessages * 3), 250);
       const fetchLimit = quickRefresh ? QUICK_REFRESH_CANDIDATE_UIDS : clampLimit(maxMessages, USER_REFRESH_MAX_UIDS, FULL_SYNC_MAX_UIDS);
@@ -749,28 +725,23 @@ async function fetchFromAccount(
   };
 
   try {
-    // ImapFlow's connectionTimeout performs the abort. Closing a socket from a
-    // competing timer before it is usable emits an uncaught event-loop error.
+    // ImapFlow bounds the handshake. The scan timer below uses only the time
+    // remaining in the same end-to-end budget instead of adding another 8s.
     await client.connect();
     console.log(`[${accountLabel}] IMAP connected to ${imapHost}`);
-    startedAt = Date.now();
     // Closing the socket is intentional: a boolean timeout cannot interrupt a
     // hung IMAP SEARCH/FETCH, which was leaving the browser loading for minutes.
+    const remainingBudgetMs = Math.max(1, budgetMs - (Date.now() - startedAt));
     timer = setTimeout(() => {
       timedOut = true;
       closeClient();
-    }, budgetMs) as unknown as number;
+    }, remainingBudgetMs) as unknown as number;
 
-    // User refresh must inspect Gmail INBOX first. `[Gmail]/All Mail` can be
-    // very large, so it remains a bounded best-effort second pass inside the
-    // same deadline. Do not gate that pass on the whole physical inbox finding
-    // zero rows: one Gmail login can back several logical accounts, and an
-    // INBOX hit for account A must not prevent an archived/filtered message for
-    // account B from being discovered in All Mail.
+    // INBOX is the latency-critical path for sign-in and household messages.
+    // Only fall back to Gmail All Mail when INBOX produced no new rows; doing
+    // both on every click consumed the fixed budget and made even OTPs late.
     await scanMailbox("INBOX", "", true);
-    const labelsFoundInInbox = new Set(emails.map((email) => String(email?.account_label || "").trim()).filter(Boolean));
-    const logicalAccountStillMissing = accountVariants.some((account) => !labelsFoundInInbox.has(account.label));
-    if (quickRefresh && logicalAccountStillMissing && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
+    if (quickRefresh && emails.length === 0 && /(^|\.)gmail\.com$/i.test(imapHost) && hasBudget()) {
       try {
         await scanMailbox("[Gmail]/All Mail", "all:", false);
       } catch (fallbackErr) {
