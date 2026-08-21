@@ -159,21 +159,12 @@ export type Database = {
           auto_delete: boolean
           created_at: string
           expires_at: string | null
-          feature_gmail: boolean
-          feature_link: boolean
-          feature_tv: boolean
           id: string
           is_free: boolean
-          last_workflow_view: string | null
           must_change_password: boolean
           name: string
           password: string | null
           pinned: boolean
-          plan_end_notified_at: string | null
-          plan_ends_at: string | null
-          plan_last_reminder_at: string | null
-          plan_start_notified_at: string | null
-          plan_starts_at: string | null
           profile_prefs: Json
           role: string
           session_limit: number | null
@@ -187,21 +178,12 @@ export type Database = {
           auto_delete?: boolean
           created_at?: string
           expires_at?: string | null
-          feature_gmail?: boolean
-          feature_link?: boolean
-          feature_tv?: boolean
           id?: string
           is_free?: boolean
-          last_workflow_view?: string | null
           must_change_password?: boolean
           name: string
           password?: string | null
           pinned?: boolean
-          plan_end_notified_at?: string | null
-          plan_ends_at?: string | null
-          plan_last_reminder_at?: string | null
-          plan_start_notified_at?: string | null
-          plan_starts_at?: string | null
           profile_prefs?: Json
           role?: string
           session_limit?: number | null
@@ -215,21 +197,12 @@ export type Database = {
           auto_delete?: boolean
           created_at?: string
           expires_at?: string | null
-          feature_gmail?: boolean
-          feature_link?: boolean
-          feature_tv?: boolean
           id?: string
           is_free?: boolean
-          last_workflow_view?: string | null
           must_change_password?: boolean
           name?: string
           password?: string | null
           pinned?: boolean
-          plan_end_notified_at?: string | null
-          plan_ends_at?: string | null
-          plan_last_reminder_at?: string | null
-          plan_start_notified_at?: string | null
-          plan_starts_at?: string | null
           profile_prefs?: Json
           role?: string
           session_limit?: number | null
@@ -369,33 +342,6 @@ export type Database = {
         }
         Relationships: []
       }
-      github_config: {
-        Row: {
-          hmac_key: string | null
-          id: number
-          pat: string | null
-          repo: string | null
-          updated_at: string
-          updated_by: string | null
-        }
-        Insert: {
-          hmac_key?: string | null
-          id?: number
-          pat?: string | null
-          repo?: string | null
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Update: {
-          hmac_key?: string | null
-          id?: number
-          pat?: string | null
-          repo?: string | null
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Relationships: []
-      }
       handshake_rate: {
         Row: {
           count: number
@@ -411,42 +357,6 @@ export type Database = {
           count?: number
           ip?: string
           minute_bucket?: string
-        }
-        Relationships: []
-      }
-      imap_cookies: {
-        Row: {
-          content: string
-          count: number
-          created_at: string
-          filename: string | null
-          format: string | null
-          id: string
-          imap_user: string
-          label: string | null
-          updated_at: string
-        }
-        Insert: {
-          content: string
-          count?: number
-          created_at?: string
-          filename?: string | null
-          format?: string | null
-          id?: string
-          imap_user: string
-          label?: string | null
-          updated_at?: string
-        }
-        Update: {
-          content?: string
-          count?: number
-          created_at?: string
-          filename?: string | null
-          format?: string | null
-          id?: string
-          imap_user?: string
-          label?: string | null
-          updated_at?: string
         }
         Relationships: []
       }
@@ -704,65 +614,6 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
-      }
-      nftoken_links: {
-        Row: {
-          account_key: string
-          account_label: string | null
-          created_at: string
-          expires_at: string
-          id: string
-          link: string | null
-          link_url: string | null
-          login_email: string
-          meta: Json
-          revoked_at: string | null
-          source_ip: string | null
-          status: string
-          user_agent: string | null
-          user_id: string
-        }
-        Insert: {
-          account_key: string
-          account_label?: string | null
-          created_at?: string
-          expires_at: string
-          id?: string
-          link?: string | null
-          link_url?: string | null
-          login_email: string
-          meta?: Json
-          revoked_at?: string | null
-          source_ip?: string | null
-          status?: string
-          user_agent?: string | null
-          user_id: string
-        }
-        Update: {
-          account_key?: string
-          account_label?: string | null
-          created_at?: string
-          expires_at?: string
-          id?: string
-          link?: string | null
-          link_url?: string | null
-          login_email?: string
-          meta?: Json
-          revoked_at?: string | null
-          source_ip?: string | null
-          status?: string
-          user_agent?: string | null
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "nftoken_links_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "app_users"
-            referencedColumns: ["id"]
-          },
-        ]
       }
       notification_events: {
         Row: {
@@ -1130,136 +981,16 @@ export type Database = {
         }
         Relationships: []
       }
-      sync_state: {
-        Row: {
-          error_count: number
-          job_name: string
-          last_cursor_date: string | null
-          last_cursor_id: string | null
-          last_run_at: string | null
-          last_success_at: string | null
-          locked_until: string | null
-          meta: Json
-          status: string | null
-          updated_at: string
-        }
-        Insert: {
-          error_count?: number
-          job_name: string
-          last_cursor_date?: string | null
-          last_cursor_id?: string | null
-          last_run_at?: string | null
-          last_success_at?: string | null
-          locked_until?: string | null
-          meta?: Json
-          status?: string | null
-          updated_at?: string
-        }
-        Update: {
-          error_count?: number
-          job_name?: string
-          last_cursor_date?: string | null
-          last_cursor_id?: string | null
-          last_run_at?: string | null
-          last_success_at?: string | null
-          locked_until?: string | null
-          meta?: Json
-          status?: string | null
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      tv_login_events: {
-        Row: {
-          account_label: string | null
-          code: string
-          cookies_available: boolean
-          created_at: string
-          finished_at: string | null
-          github_run_url: string | null
-          id: string
-          imap_user: string | null
-          ip: string | null
-          message: string | null
-          metadata: Json
-          result: string | null
-          screenshot_url: string | null
-          status: string
-          updated_at: string
-          user_agent: string | null
-          user_id: string | null
-          username: string | null
-        }
-        Insert: {
-          account_label?: string | null
-          code: string
-          cookies_available?: boolean
-          created_at?: string
-          finished_at?: string | null
-          github_run_url?: string | null
-          id?: string
-          imap_user?: string | null
-          ip?: string | null
-          message?: string | null
-          metadata?: Json
-          result?: string | null
-          screenshot_url?: string | null
-          status?: string
-          updated_at?: string
-          user_agent?: string | null
-          user_id?: string | null
-          username?: string | null
-        }
-        Update: {
-          account_label?: string | null
-          code?: string
-          cookies_available?: boolean
-          created_at?: string
-          finished_at?: string | null
-          github_run_url?: string | null
-          id?: string
-          imap_user?: string | null
-          ip?: string | null
-          message?: string | null
-          metadata?: Json
-          result?: string | null
-          screenshot_url?: string | null
-          status?: string
-          updated_at?: string
-          user_agent?: string | null
-          user_id?: string | null
-          username?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "tv_login_events_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "app_users"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      acquire_sync_lock: {
-        Args: { _job: string; _lease_seconds: number }
-        Returns: boolean
-      }
-      expire_stale_tv_login_events: { Args: never; Returns: number }
       get_cron_status: { Args: never; Returns: Json }
       get_email_cleanup_status: { Args: never; Returns: Json }
-      prune_audit_logs: { Args: never; Returns: undefined }
       purge_expired_crypto_sessions: { Args: never; Returns: undefined }
       purge_expired_free_profiles: { Args: never; Returns: number }
       purge_expired_nonces: { Args: never; Returns: undefined }
-      release_sync_lock: {
-        Args: { _job: string; _ok: boolean }
-        Returns: undefined
-      }
       schedule_email_cleanup: {
         Args: { days: number; hour: number }
         Returns: undefined
@@ -1268,7 +999,6 @@ export type Database = {
         Args: { auth_key: string; cron_expr: string; function_url: string }
         Returns: undefined
       }
-      schedule_tv_login_cleanup: { Args: never; Returns: undefined }
       unschedule_email_cleanup: { Args: never; Returns: undefined }
       unschedule_email_sync: { Args: never; Returns: undefined }
     }

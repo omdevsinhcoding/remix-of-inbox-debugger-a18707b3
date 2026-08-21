@@ -133,9 +133,6 @@
 }
 
 
-
-
-
 .gt-toast {
   --gt-bg: hsl(0 0% 100% / 0.98);
   --gt-fg: hsl(224 28% 8%);
@@ -301,8 +298,6 @@
     align-items: center;
     gap: 8px;
   }
-
-
   .gt-toast {
     grid-template-columns: 30px minmax(0, 1fr) 24px;
     column-gap: 10px;

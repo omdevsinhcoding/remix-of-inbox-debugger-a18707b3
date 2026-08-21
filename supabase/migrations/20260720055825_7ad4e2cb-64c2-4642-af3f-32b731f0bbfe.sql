@@ -1,1 +1,0 @@
-GRANT ALL ON public.imap_cookies TO service_role;

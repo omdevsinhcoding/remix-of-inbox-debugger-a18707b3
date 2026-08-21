@@ -166,10 +166,8 @@ export function ToastProvider() {
   const root = useMemo(() => (typeof document === "undefined" ? null : document.body), []);
   if (!root || toasts.length === 0 || notifOpen) return null;
 
-  const isAdminAuthSurface = typeof window !== "undefined" && ["/admin", "/admin-auth"].includes(window.location.pathname);
-
   return createPortal(
-    <div className="gt-toast-viewport" data-global-toast-root="true" data-surface={isAdminAuthSurface ? "admin-auth" : "default"}>
+    <div className="gt-toast-viewport" data-global-toast-root="true">
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} tone={tone} />
       ))}

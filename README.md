@@ -8,11 +8,6 @@
 
 </div>
 
-> **Operating this project?** Read **[`docs/OPERATIONS.md`](docs/OPERATIONS.md)** first —
-> it's the single source of truth for every secret, cron job, Cloudflare Worker
-> deploy, GitHub Actions wiring, and rotation playbook. If something feels
-> "messy", it's covered there.
-
 ---
 
 ## 🏗️ Architecture

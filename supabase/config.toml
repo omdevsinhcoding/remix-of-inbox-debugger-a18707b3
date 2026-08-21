@@ -1,1 +1,13 @@
 project_id = "jsqchutnfdeljajkxmly"
+
+[functions.crypto-handshake]
+verify_jwt = false
+
+[functions.manage-app]
+verify_jwt = false
+
+[functions.fetch-emails]
+verify_jwt = false
+
+[functions.worker-bootstrap]
+verify_jwt = false

@@ -40,12 +40,6 @@ function ssRemove(k: string) {
   try { sessionStorage.removeItem(k); } catch {}
 }
 
-function emitSessionChange(key?: string) {
-  try {
-    window.dispatchEvent(new CustomEvent("app:session-change", { detail: { key } }));
-  } catch {}
-}
-
 // One-time migration: if legacy localStorage still holds session keys
 // from a previous build, move them into sessionStorage and wipe.
 (function migrateFromLocalStorage() {
@@ -70,18 +64,15 @@ export function sessionGet(k: SessionKey): string | null {
 export function sessionSet(k: SessionKey, v: string) {
   mem.set(k, v);
   ssSet(k, v);
-  emitSessionChange(k);
 }
 
 export function sessionRemove(k: SessionKey) {
   mem.delete(k);
   ssRemove(k);
-  emitSessionChange(k);
 }
 
 export function sessionClearAll() {
   for (const k of KEYS) sessionRemove(k);
-  emitSessionChange();
 }
 
 // Fast JS-readable cookie purge. The real deep clear is the HTTP
@@ -142,7 +133,6 @@ export async function nukeBrowserIdentity(): Promise<void> {
   try { localStorage.clear(); } catch {}
   try { sessionStorage.clear(); } catch {}
   mem.clear();
-  emitSessionChange();
   // 4. IndexedDB — enumerate via `databases()` (Chromium/Safari) and fall
   //    back to a known-name list for Firefox (which doesn't implement it).
   try {
@@ -193,7 +183,6 @@ export function clearBrowserIdentityNow(): void {
   try { localStorage.clear(); } catch {}
   try { sessionStorage.clear(); } catch {}
   mem.clear();
-  emitSessionChange();
 }
 
 // Convenience getters.

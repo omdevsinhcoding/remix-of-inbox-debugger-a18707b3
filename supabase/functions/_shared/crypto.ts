@@ -97,31 +97,7 @@ async function sha256Hex(s: string): Promise<string> {
   return bytesToHex(h);
 }
 
-// ---------- Op#3: L3 (Deno isolate memory) session cache ----------
-// crypto_sessions are read on EVERY encrypted request (~O(pageviews)) and
-// never mutate after insert (aes_key + origin_hash frozen at handshake).
-// Cache them in warm-isolate memory with TTL so Postgres becomes last-resort.
-interface CachedSession { key: CryptoKey; origin_hash: string | null; expires_at: number }
-const SESSION_CACHE = new Map<string, CachedSession>();
-const SESSION_CACHE_MAX = 5000;
-
-function pruneSessionCache() {
-  const now = Date.now();
-  for (const [id, s] of SESSION_CACHE) if (s.expires_at < now) SESSION_CACHE.delete(id);
-  if (SESSION_CACHE.size > SESSION_CACHE_MAX) {
-    // simple FIFO eviction — Map preserves insertion order
-    const drop = SESSION_CACHE.size - SESSION_CACHE_MAX;
-    let i = 0;
-    for (const id of SESSION_CACHE.keys()) { if (i++ >= drop) break; SESSION_CACHE.delete(id); }
-  }
-}
-
 async function loadSession(sessionId: string): Promise<{ key: CryptoKey; origin_hash: string | null } | null> {
-  const cached = SESSION_CACHE.get(sessionId);
-  const now = Date.now();
-  if (cached && cached.expires_at > now) {
-    return { key: cached.key, origin_hash: cached.origin_hash };
-  }
   const sb = admin();
   const { data, error } = await sb
     .from("crypto_sessions")
@@ -129,33 +105,10 @@ async function loadSession(sessionId: string): Promise<{ key: CryptoKey; origin_
     .eq("id", sessionId)
     .maybeSingle();
   if (error || !data) return null;
-  const exp = new Date((data as any).expires_at).getTime();
-  if (exp < now) return null;
+  if (new Date((data as any).expires_at).getTime() < Date.now()) return null;
   const raw = pgByteaToBytes((data as any).aes_key);
   const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-  const origin_hash = (data as any).origin_hash ?? null;
-  SESSION_CACHE.set(sessionId, { key, origin_hash, expires_at: exp });
-  if (SESSION_CACHE.size > SESSION_CACHE_MAX) pruneSessionCache();
-  return { key, origin_hash };
-}
-
-// ---------- Op#3: in-memory nonce dedupe (fast-reject before DB) ----------
-// DB (crypto_nonces) remains authoritative across isolates. In-memory bloom-ish
-// Set catches the common intra-isolate replay case in O(1) without a DB round
-// trip. Cap per-session to keep memory bounded.
-const NONCE_CACHE = new Map<string, Set<string>>();
-const NONCE_PER_SESSION_CAP = 512;
-function noncePreCheck(sessionId: string, nonce: string): boolean {
-  let s = NONCE_CACHE.get(sessionId);
-  if (!s) { s = new Set(); NONCE_CACHE.set(sessionId, s); }
-  if (s.has(nonce)) return false;
-  if (s.size >= NONCE_PER_SESSION_CAP) {
-    // drop oldest half
-    const it = s.values();
-    for (let i = 0; i < NONCE_PER_SESSION_CAP / 2; i++) { const v = it.next(); if (v.done) break; s.delete(v.value); }
-  }
-  s.add(nonce);
-  return true;
+  return { key, origin_hash: (data as any).origin_hash ?? null };
 }
 
 export interface EncryptedRequestContext {
@@ -239,20 +192,18 @@ export async function readRequest(
           throw new TransportError("origin mismatch", 403);
         }
       }
-      // Op#3: L3 fast-reject on in-isolate replay; DB is authoritative safety
-      // net across isolates but fires async so hot path stays sub-millisecond.
-      if (!noncePreCheck(sessionId, parsed.n)) {
-        throw new TransportError("replay", 400);
-      }
+      // Insert nonce; unique-violation ⇒ replay
       const sb = admin();
       const nonceHex = "\\x" + Array.from(atob(parsed.n), (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
-      sb.from("crypto_nonces")
-        .insert({ session_id: sessionId, nonce: nonceHex })
-        .then(({ error: nErr }: any) => {
-          if (nErr && (nErr as any).code !== "23505") {
-            console.warn("nonce insert error:", nErr.message);
-          }
-        });
+      const { error: nErr } = await sb
+        .from("crypto_nonces")
+        .insert({ session_id: sessionId, nonce: nonceHex });
+      if (nErr) {
+        // 23505 = unique_violation
+        if ((nErr as any).code === "23505") throw new TransportError("replay", 400);
+        // Non-fatal: log & continue (don't fail requests on transient DB errors)
+        console.warn("nonce insert error:", nErr.message);
+      }
       body = parsed.b ?? null;
     }
 
@@ -313,12 +264,6 @@ export async function maybeEncryptResponse(
   if (!ctx) return res;
   const contentType = res.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) return res;
-  // Never encrypt error responses. Error messages ("Authentication required",
-  // "bad request", validation errors, etc.) carry no sensitive data, and
-  // encrypting them means any client-side decrypt hiccup (stale session key
-  // after handshake reset, transport downgrade, proxy content-type rewrite)
-  // surfaces to the user as raw binary garbage instead of a readable message.
-  if (!res.ok) return res;
   const text = await res.text();
   let payload: any = null;
   try { payload = text ? JSON.parse(text) : null; } catch { payload = text; }
@@ -329,45 +274,44 @@ export async function maybeEncryptResponse(
 // Request : [ver(1)][clientPubRaw(65)]
 // Response: [ver(1)][sessionId(16)][serverPubRaw(65)][expiresAtMs(8, big-endian)]
 
-// Op#3: Pure in-memory rate limiter. `handshake_rate` DB writes are eliminated
-// on the hot path. Per-isolate counters reset on cold start (acceptable for an
-// abuse guard — cold starts are rare and legitimate bursts recover instantly).
-interface RateBucket { minute: number; count: number; hourStart: number; hourCount: number }
-const RATE_CACHE = new Map<string, RateBucket>();
-const RATE_CACHE_MAX = 20_000;
-
-function rateLimitHandshakeSync(ip: string): boolean {
-  const now = Date.now();
-  const minute = Math.floor(now / 60_000);
-  let b = RATE_CACHE.get(ip);
-  if (!b || b.minute !== minute) {
-    const hourStart = b && (now - b.hourStart) < 3_600_000 ? b.hourStart : now;
-    const hourCount = b && (now - b.hourStart) < 3_600_000 ? b.hourCount : 0;
-    b = { minute, count: 0, hourStart, hourCount };
-    RATE_CACHE.set(ip, b);
-  }
-  b.count += 1;
-  b.hourCount += 1;
-  if (RATE_CACHE.size > RATE_CACHE_MAX) {
-    // FIFO drop
-    const drop = RATE_CACHE.size - RATE_CACHE_MAX;
-    let i = 0;
-    for (const k of RATE_CACHE.keys()) { if (i++ >= drop) break; RATE_CACHE.delete(k); }
-  }
-  if (b.count > 180) return false;
-  if (b.hourCount > 1800) return false;
-  return true;
+async function rateLimitHandshake(ip: string): Promise<boolean> {
+  const sb = admin();
+  const now = new Date();
+  const bucket = new Date(Math.floor(now.getTime() / 60_000) * 60_000).toISOString();
+  // increment count for this minute
+  const { data: existing } = await sb
+    .from("handshake_rate")
+    .select("count")
+    .eq("ip", ip)
+    .eq("minute_bucket", bucket)
+    .maybeSingle();
+  const nextCount = ((existing as any)?.count ?? 0) + 1;
+  await sb.from("handshake_rate")
+    .upsert({ ip, minute_bucket: bucket, count: nextCount }, { onConflict: "ip,minute_bucket" });
+  // Mobile carriers, campus Wi‑Fi, office networks, and preview deployments can
+  // put many legitimate users behind one NAT IP. 10/minute caused normal page
+  // loads to fail with a visible "handshake 429". Keep abuse protection, but
+  // allow production-level bursts from shared IPs.
+  if (nextCount > 180) return false;
+  // hourly total
+  const hourAgo = new Date(now.getTime() - 60 * 60_000).toISOString();
+  const { data: rows } = await sb
+    .from("handshake_rate")
+    .select("count")
+    .eq("ip", ip)
+    .gte("minute_bucket", hourAgo);
+  const total = (rows ?? []).reduce((s: number, r: any) => s + (r.count ?? 0), 0);
+  return total <= 1800;
 }
-
 
 export async function handleHandshake(req: Request): Promise<Response> {
   try { checkSecFetchSite(req); } catch (e) { return transportErrorResponse(e); }
 
   const ip = getClientIp(req);
-  if (!rateLimitHandshakeSync(ip)) {
+  const ok = await rateLimitHandshake(ip);
+  if (!ok) {
     return new Response("rate limited", { status: 429, headers: cryptoCorsHeaders });
   }
-
 
   const buf = new Uint8Array(await req.arrayBuffer());
   if (buf.length !== 1 + 65 || buf[0] !== VERSION) {
@@ -405,12 +349,6 @@ export async function handleHandshake(req: Request): Promise<Response> {
   if (error || !data) {
     return new Response("session store failed", { status: 500, headers: cryptoCorsHeaders });
   }
-  // Op#3: warm L3 immediately so first encrypted request skips Postgres.
-  try {
-    const aesKey = await crypto.subtle.importKey("raw", aesRaw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-    SESSION_CACHE.set(data.id, { key: aesKey, origin_hash: originHash, expires_at: expiresAt.getTime() });
-    if (SESSION_CACHE.size > SESSION_CACHE_MAX) pruneSessionCache();
-  } catch { /* non-fatal */ }
   const sidBytes = uuidStringToBytes(data.id);
   const expMs = BigInt(expiresAt.getTime());
   const out = new Uint8Array(1 + 16 + 65 + 8);

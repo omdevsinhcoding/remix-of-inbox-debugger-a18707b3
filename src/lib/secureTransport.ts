@@ -32,29 +32,6 @@ function canGunzipResponse(): boolean {
   return typeof DecompressionStream !== "undefined";
 }
 
-function extractJsonError(text: string): string | null {
-  if (!text) return null;
-  try {
-    const parsed = JSON.parse(text);
-    const msg = parsed?.error || parsed?.message || parsed?.msg || parsed?.details;
-    return typeof msg === "string" && msg.trim() ? msg.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-function cleanResponsePreview(text: string): string {
-  if (!text) return "";
-  const trimmed = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]+/g, " ").trim();
-  const printable = Array.from(trimmed).filter((ch) => {
-    const code = ch.charCodeAt(0);
-    return code === 9 || code === 10 || code === 13 || code >= 32;
-  }).join("").trim();
-  const oddChars = printable.replace(/[\w\s.,:;!?()\[\]{}'"/@#%&+=\-_*<>|`~₹$€£]/g, "").length;
-  if (!printable || oddChars > Math.max(8, printable.length * 0.25)) return "";
-  return printable.slice(0, 240);
-}
-
 type Session = { sidBytes: Uint8Array; key: CryptoKey; expiresAt: number };
 let sessionPromise: Promise<Session> | null = null;
 let serverTimeOffsetMs = 0;
@@ -267,10 +244,7 @@ export async function secureFetchJson(
   const ct = (res.headers.get("content-type") || "").toLowerCase();
   if (!ct.includes(CT_BINARY)) {
     resetSession();
-    const rawPreview = (await res.text().catch(() => "")).slice(0, 500);
-    const jsonError = extractJsonError(rawPreview);
-    if (jsonError) throw new Error(jsonError);
-    const preview = cleanResponsePreview(rawPreview);
+    const preview = (await res.text().catch(() => "")).slice(0, 200);
     throw new Error(
       `secureTransport: non-binary response from ${functionName} (status ${res.status}, ct=${ct || "none"})${preview ? `: ${preview}` : ""}`,
     );
@@ -288,7 +262,7 @@ export async function secureFetchJson(
     dec = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: rIv }, s.key, rCt));
   } catch (e) {
     resetSession();
-    throw new Error(`secureTransport: encrypted response could not be decoded for ${functionName}`);
+    throw e;
   }
   if (ver === VERSION_GZIP) {
     try {
@@ -299,12 +273,7 @@ export async function secureFetchJson(
     }
   }
   const text = new TextDecoder().decode(dec);
-  let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    throw new Error(`secureTransport: invalid JSON response from ${functionName}`);
-  }
+  const data = text ? JSON.parse(text) : null;
   if (!res.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
   return data;
 }

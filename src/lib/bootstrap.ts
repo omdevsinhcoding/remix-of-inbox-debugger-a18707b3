@@ -13,8 +13,7 @@ export type MaintenanceInfo = { enabled: boolean; title?: string; message?: stri
 export type FreeAvatarCooldown = { minutes: number; lastAt: string | null };
 export type LocationPolicy = { required: boolean };
 export type TvFeature = { enabled: boolean };
-export type ContactInfo = { telegram: string; whatsapp: string; email: string; note: string };
-export type BootstrapResult = { users: any[]; recaptcha: any; workerUrls: string[]; emailFilters?: EmailFilters; maintenance?: MaintenanceInfo; avatarBaseUrl?: string; freeAvatarCooldown?: FreeAvatarCooldown; locationPolicy?: LocationPolicy; tvFeature?: TvFeature; contactInfo?: ContactInfo; serverNow?: string };
+export type BootstrapResult = { users: any[]; recaptcha: any; workerUrls: string[]; emailFilters?: EmailFilters; maintenance?: MaintenanceInfo; avatarBaseUrl?: string; freeAvatarCooldown?: FreeAvatarCooldown; locationPolicy?: LocationPolicy; tvFeature?: TvFeature };
 
 // Module-level free-avatar cooldown cache — kept in sync with bootstrap.
 let currentFreeAvatarCooldown: FreeAvatarCooldown = { minutes: 5, lastAt: null };
@@ -53,20 +52,7 @@ function sanitizeBootstrapUsers(users: any[]): any[] {
     if (!u || typeof u !== "object") return u;
     const username = typeof u.username === "string" ? u.username : null;
     const legacyGeneratedFreeUsername = !!u.isFree && !!username && /^free_[a-z0-9]+_[a-z0-9]+$/i.test(username);
-    const rawFeatures = u.features && typeof u.features === "object" ? u.features : {};
-    const features = {
-      gmail: rawFeatures.gmail !== undefined ? rawFeatures.gmail !== false : u.feature_gmail !== false,
-      tv: rawFeatures.tv !== undefined ? rawFeatures.tv !== false : u.feature_tv !== false,
-      link: rawFeatures.link !== undefined ? rawFeatures.link === true : u.feature_link === true,
-    };
-    return {
-      ...u,
-      ...(legacyGeneratedFreeUsername ? { username: null } : {}),
-      feature_gmail: features.gmail,
-      feature_tv: features.tv,
-      feature_link: features.link,
-      features,
-    };
+    return legacyGeneratedFreeUsername ? { ...u, username: null } : u;
   });
 }
 
@@ -120,10 +106,7 @@ export function readBootstrapCache(): BootstrapResult | null {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
     if (!parsed.savedAt || Date.now() - parsed.savedAt > BOOTSTRAP_CACHE_TTL_MS) return null;
-    const contactInfo: ContactInfo = parsed.contactInfo && typeof parsed.contactInfo === "object"
-      ? { telegram: String(parsed.contactInfo.telegram || ""), whatsapp: String(parsed.contactInfo.whatsapp || ""), email: String(parsed.contactInfo.email || ""), note: String(parsed.contactInfo.note || "") }
-      : { telegram: "", whatsapp: "", email: "", note: "" };
-    const result = { users: sanitizeBootstrapUsers(parsed.users || []), recaptcha: parsed.recaptcha, workerUrls: parsed.workerUrls || [], emailFilters: DEFAULT_EMAIL_FILTERS, maintenance: parsed.maintenance, avatarBaseUrl: parsed.avatarBaseUrl || "", freeAvatarCooldown: parsed.freeAvatarCooldown || { minutes: 5, lastAt: null }, locationPolicy: { required: parsed.locationPolicy?.required !== false }, tvFeature: { enabled: parsed.tvFeature?.enabled !== false }, contactInfo };
+    const result = { users: sanitizeBootstrapUsers(parsed.users || []), recaptcha: parsed.recaptcha, workerUrls: parsed.workerUrls || [], emailFilters: DEFAULT_EMAIL_FILTERS, maintenance: parsed.maintenance, avatarBaseUrl: parsed.avatarBaseUrl || "", freeAvatarCooldown: parsed.freeAvatarCooldown || { minutes: 5, lastAt: null }, locationPolicy: { required: parsed.locationPolicy?.required !== false }, tvFeature: { enabled: parsed.tvFeature?.enabled !== false } };
     setFreeAvatarCooldown(result.freeAvatarCooldown);
     setAvatarBaseUrl(result.avatarBaseUrl);
     return result;
@@ -145,67 +128,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 let bootstrapInFlight: Promise<BootstrapResult> | null = null;
 
-// Persisted ETag from the last worker/edge bootstrap response.
-// Enables `If-None-Match` requests that come back as HTTP 304 (no body,
-// no upstream DB read) whenever the settings/users snapshot is unchanged.
-const BOOTSTRAP_ETAG_KEY = "bootstrap_etag_v1";
-function readBootstrapEtag(): string | null {
-  try { return localStorage.getItem(BOOTSTRAP_ETAG_KEY); } catch { return null; }
-}
-function writeBootstrapEtag(etag: string | null) {
-  try {
-    if (etag) localStorage.setItem(BOOTSTRAP_ETAG_KEY, etag);
-    else localStorage.removeItem(BOOTSTRAP_ETAG_KEY);
-  } catch {}
-}
-
-// Try the Cloudflare worker's `/api/bootstrap` first. It fronts the edge
-// function with a shared KV cache + ETag so most calls resolve as a 304
-// (no DB read, no payload transfer). Falls back to `invokeEdge` on any
-// failure so the picker never breaks if the worker is misconfigured.
-async function fetchBootstrapViaWorker(): Promise<any | null> {
-  const workerUrls = (() => {
-    try {
-      const raw = typeof localStorage !== "undefined" ? localStorage.getItem(WORKER_URLS_KEY) : null;
-      const arr = raw ? JSON.parse(raw) : null;
-      return Array.isArray(arr) ? arr.filter((s: any) => typeof s === "string" && s.length > 0) : [];
-    } catch { return []; }
-  })();
-  if (workerUrls.length === 0) return null;
-  const etag = readBootstrapEtag();
-  for (const base of workerUrls) {
-    try {
-      const ctrl = new AbortController();
-      const timer = window.setTimeout(() => ctrl.abort(), 3500);
-      const res = await fetch(`${base.replace(/\/+$/, "")}/api/bootstrap`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(etag ? { "If-None-Match": `"${etag}"` } : {}),
-        },
-        body: "{}",
-        signal: ctrl.signal,
-      }).finally(() => window.clearTimeout(timer));
-      // 304 — nothing changed. Use the cached bootstrap payload.
-      if (res.status === 304) {
-        const cached = readBootstrapCache();
-        if (cached) return { ...cached, success: true, __from304: true };
-        // No local cache to pair with the 304 — force a full re-fetch.
-        continue;
-      }
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (!data?.success) continue;
-      const nextEtag = (res.headers.get("etag") || "").replace(/^W\//, "").replace(/^"|"$/g, "") || (data.etag || "");
-      if (nextEtag) writeBootstrapEtag(nextEtag);
-      return data;
-    } catch {
-      // try next worker
-    }
-  }
-  return null;
-}
-
 export async function bootstrapFromSupabase(opts?: { force?: boolean }): Promise<BootstrapResult> {
   if (!opts?.force) {
     const cached = readBootstrapCache();
@@ -214,25 +136,18 @@ export async function bootstrapFromSupabase(opts?: { force?: boolean }): Promise
   }
 
   const request = (async () => {
-    let data: any = await fetchBootstrapViaWorker();
-    if (!data) {
-      const { invokeEdge } = await import("./secureTransport");
-      data = await withTimeout(
-        invokeEdge("manage-app", { action: "bootstrap_public" }),
-        BOOTSTRAP_TIMEOUT_MS,
-      );
-      if (data?.etag) writeBootstrapEtag(data.etag);
-    }
+    const { invokeEdge } = await import("./secureTransport");
+    const data: any = await withTimeout(
+      invokeEdge("manage-app", { action: "bootstrap_public" }),
+      BOOTSTRAP_TIMEOUT_MS,
+    );
     if (!data?.success) throw new Error(data?.error || "Bootstrap failed");
 
     if (Array.isArray(data.workerUrls) && data.workerUrls.length > 0) {
       storeWorkerUrls(data.workerUrls);
     }
 
-    const contactInfo: ContactInfo = data.contactInfo && typeof data.contactInfo === "object"
-      ? { telegram: String(data.contactInfo.telegram || ""), whatsapp: String(data.contactInfo.whatsapp || ""), email: String(data.contactInfo.email || ""), note: String(data.contactInfo.note || "") }
-      : { telegram: "", whatsapp: "", email: "", note: "" };
-    const result: BootstrapResult = { users: sanitizeBootstrapUsers(data.users || []), recaptcha: data.recaptcha, workerUrls: data.workerUrls || [], emailFilters: normalizeEmailFilters(data.emailFilters), maintenance: data.maintenance || { enabled: false }, avatarBaseUrl: data.avatarBaseUrl || "", freeAvatarCooldown: data.freeAvatarCooldown || { minutes: 5, lastAt: null }, locationPolicy: { required: data.locationPolicy?.required !== false }, tvFeature: { enabled: data.tvFeature?.enabled !== false }, contactInfo, serverNow: typeof data.serverNow === "string" ? data.serverNow : undefined };
+    const result: BootstrapResult = { users: sanitizeBootstrapUsers(data.users || []), recaptcha: data.recaptcha, workerUrls: data.workerUrls || [], emailFilters: normalizeEmailFilters(data.emailFilters), maintenance: data.maintenance || { enabled: false }, avatarBaseUrl: data.avatarBaseUrl || "", freeAvatarCooldown: data.freeAvatarCooldown || { minutes: 5, lastAt: null }, locationPolicy: { required: data.locationPolicy?.required !== false }, tvFeature: { enabled: data.tvFeature?.enabled !== false } };
     setAvatarBaseUrl(result.avatarBaseUrl);
     setEmailFilters(result.emailFilters || DEFAULT_EMAIL_FILTERS);
     setFreeAvatarCooldown(result.freeAvatarCooldown);
@@ -247,7 +162,6 @@ export async function bootstrapFromSupabase(opts?: { force?: boolean }): Promise
     if (bootstrapInFlight === request) bootstrapInFlight = null;
   }
 }
-
 
 
 export const bootstrapPromise: Promise<BootstrapResult> = bootstrapFromSupabase().catch((err) => {

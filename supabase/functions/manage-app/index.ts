@@ -1,32 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { authenticator } from "npm:otplib@12.0.1";
-import sodium from "https://esm.sh/libsodium-wrappers@0.7.13";
 import { readRequest, maybeEncryptResponse, EncryptedRequestContext, PlaintextRejectedError, plaintextRejectedResponse, TransportError, transportErrorResponse } from "../_shared/crypto.ts";
-import { getSetting, invalidateSetting, invalidateAllSettings, readSettingRow } from "../_shared/settingsCache.ts";
-// build-marker: tv-runner-observability v22 (2026-07-25) — stale-run cleanup + VPS fallback URL
-
-// Wrap `app_settings` writes so the shared TTL cache is invalidated the moment
-// an admin changes a value. Prevents 30-second staleness on toggles.
-async function upsertSetting(supabase: any, key: string, value: any) {
-  const res = await supabase.from("app_settings").upsert({ key, value }, { onConflict: "key" });
-  invalidateSetting(key);
-  return res;
-}
-// last_seen_at throttle: don't rewrite on every request — WAL/IO amplifier.
-const SESSION_TOUCH_MS = 60_000;
-const __sessionTouchMemo = new Map<string, number>();
-function shouldTouchSession(id: string): boolean {
-  const last = __sessionTouchMemo.get(id) || 0;
-  const now = Date.now();
-  if (now - last < SESSION_TOUCH_MS) return false;
-  __sessionTouchMemo.set(id, now);
-  // Cap memo size to avoid unbounded growth in long-lived isolates.
-  if (__sessionTouchMemo.size > 2000) {
-    const cutoff = now - SESSION_TOUCH_MS;
-    for (const [k, v] of __sessionTouchMemo) if (v < cutoff) __sessionTouchMemo.delete(k);
-  }
-  return true;
-}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -41,12 +15,6 @@ const corsHeaders = {
 let __bootstrapCache: { at: number; payload: any } | null = null;
 const BOOTSTRAP_TTL_MS = 10_000;
 function invalidateBootstrapCache() { __bootstrapCache = null; }
-
-const TV_RUNNER_START_TIMEOUT_MS = 30_000;
-const TV_GITHUB_START_TIMEOUT_MS = 120_000;
-const TV_RUNNER_RESULT_TIMEOUT_MS = 55_000;
-const TV_GITHUB_RESULT_TIMEOUT_MS = 90_000;
-const TV_RUNNER_DISPATCH_TIMEOUT_MS = 3_500;
 
 type EmailVisibilityFilters = { showSignInCodes?: boolean; showPasswordResets?: boolean; showAccountUpdates?: boolean };
 function publicProfilePrefs(value: any) {
@@ -64,38 +32,24 @@ function isGlobalLocationRequired(value: any) {
 }
 async function loadGlobalLocationRequired(supabase: any): Promise<boolean> {
   try {
-    const value = await getSetting(supabase, "location_policy");
-    return isGlobalLocationRequired(value);
+    const { data } = await supabase.from("app_settings").select("value").eq("key", "location_policy").maybeSingle();
+    return isGlobalLocationRequired(data?.value);
   } catch {
     return true;
   }
 }
 async function loadTvFeatureEnabled(supabase: any): Promise<boolean> {
   try {
-    const value: any = await getSetting(supabase, "tv_feature");
-    return value?.enabled !== false;
+    const { data } = await supabase.from("app_settings").select("value").eq("key", "tv_feature").maybeSingle();
+    return data?.value?.enabled !== false;
   } catch {
     return true;
   }
 }
-type UserFeatures = { gmail: boolean; tv: boolean; link: boolean };
-function pickFeatures(u: any): UserFeatures {
-  return {
-    gmail: u?.feature_gmail !== false,
-    tv:    u?.feature_tv    !== false,
-    link:  u?.feature_link  === true,
-  };
-}
 function publicVpsConfig(value: any) {
   const v = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const ip = typeof v.ip === "string" && v.ip.trim() ? v.ip.trim() : "140.238.226.213";
-  const runnerUrl = typeof v.runnerUrl === "string" && v.runnerUrl.trim() ? v.runnerUrl.trim().replace(/\/+$/g, "") : "";
-  const rawMode = typeof v.mode === "string" ? v.mode.trim().toLowerCase() : "";
-  const mode: "vps" | "github" = rawMode === "github" ? "github" : "vps";
   return {
-    ip,
-    runnerUrl,
-    mode,
+    ip: typeof v.ip === "string" && v.ip.trim() ? v.ip.trim() : "140.238.226.213",
     keyFilename: typeof v.keyFilename === "string" && v.keyFilename.trim() ? v.keyFilename.trim() : "vps-private-key.pem",
     keyObjectKey: typeof v.keyObjectKey === "string" ? v.keyObjectKey : "",
     keyUploadedAt: typeof v.keyUploadedAt === "string" ? v.keyUploadedAt : "",
@@ -103,22 +57,13 @@ function publicVpsConfig(value: any) {
     hasKey: typeof v.keyObjectKey === "string" && v.keyObjectKey.length > 0,
   };
 }
-function effectiveTvRunnerUrl(vpsCfgValue: any): string {
-  const cfg = publicVpsConfig(vpsCfgValue);
-  if (cfg.runnerUrl) return cfg.runnerUrl;
-  const env = (Deno.env.get("TV_FAST_RUNNER_URL") || "").trim().replace(/\/+$/g, "");
-  if (env) return env;
-  return cfg.ip ? `http://${cfg.ip}:8788` : "";
-}
 function isProfileLocationRequired(user: any, globalRequired = true) {
-  if (!user) return false;
+  if (!globalRequired || !user) return false;
   const prefs = user.profile_prefs && typeof user.profile_prefs === "object" && !Array.isArray(user.profile_prefs) ? user.profile_prefs : {};
   const override = prefs.locationRequiredOverride === true;
-  // Admins default to GPS OFF, but an explicit admin-card Location toggle ON
-  // must be enforced even if the global user-location policy is disabled, and
-  // must include rich Telegram location details on successful sign-in.
-  if (user.role === "admin") return override ? prefs.locationRequired === true : false;
-  if (!globalRequired) return false;
+  // Admin default OFF (opt-in). Non-admin default ON (opt-out). Same UI toggle
+  // in the admin card as user cards — just inverted defaults.
+  if (user.role === "admin") return override && prefs.locationRequired === true;
   return !(override && prefs.locationRequired === false);
 }
 const VIS_PASSWORD_RESET_RE = /(password (was |has been )?(changed|reset|updated)|reset your password|forgot password|password reset|new password|account recovery)/i;
@@ -321,12 +266,6 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-function randomHex(bytes = 32): string {
-  const arr = new Uint8Array(bytes);
-  crypto.getRandomValues(arr);
-  return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 function normalizeAccountLabels(raw: any, available: string[] = []): string[] {
   const allowed = Array.from(new Set(available.map((s) => String(s || "").trim()).filter(Boolean)));
   const out: string[] = [];
@@ -364,16 +303,16 @@ async function normalizeAssignedAccounts(supabase: any, raw: any): Promise<strin
 }
 
 async function loadAvailableAccountLabels(supabase: any): Promise<string[]> {
-  const value = await getSetting<any[]>(supabase, "email_accounts");
-  return (Array.isArray(value) ? value : []).map((acc: any) => String(acc?.label || acc?.user || "").trim()).filter(Boolean);
+  const { data } = await supabase.from("app_settings").select("value").eq("key", "email_accounts").maybeSingle();
+  return ["Primary", ...((Array.isArray(data?.value) ? data.value : []).map((acc: any) => String(acc?.label || acc?.user || "").trim()).filter(Boolean))];
 }
 
 async function loadRecipientFiltersByLabel(supabase: any): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>();
   try {
-    const value = await getSetting<any[]>(supabase, "email_accounts");
-    if (Array.isArray(value)) {
-      for (const acc of value) {
+    const { data } = await supabase.from("app_settings").select("value").eq("key", "email_accounts").maybeSingle();
+    if (Array.isArray(data?.value)) {
+      for (const acc of data.value) {
         const label = String(acc?.label || acc?.user || "").trim();
         if (!label) continue;
         out.set(label, normalizeRecipientFilters(acc.recipientFilters || acc.recipientFilter || acc.allowedRecipients));
@@ -397,64 +336,6 @@ async function verifyRecaptchaToken(secretKey: string, token: string, ip?: strin
   if (!res.ok) return false;
   const data = await res.json().catch(() => null) as any;
   return data?.success === true;
-}
-
-const TOTP_STEP_SECONDS = 30;
-const TOTP_DIGITS = 6;
-const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-
-function base32ToBytes(input: string): Uint8Array {
-  const clean = String(input || "").toUpperCase().replace(/[^A-Z2-7]/g, "");
-  let bits = "";
-  const out: number[] = [];
-  for (const ch of clean) {
-    const value = BASE32_ALPHABET.indexOf(ch);
-    if (value < 0) continue;
-    bits += value.toString(2).padStart(5, "0");
-    while (bits.length >= 8) {
-      out.push(parseInt(bits.slice(0, 8), 2));
-      bits = bits.slice(8);
-    }
-  }
-  return new Uint8Array(out);
-}
-
-function counterToBytes(counter: number): Uint8Array {
-  const bytes = new Uint8Array(8);
-  let n = BigInt(Math.max(0, Math.floor(counter)));
-  for (let i = 7; i >= 0; i--) {
-    bytes[i] = Number(n & 0xffn);
-    n >>= 8n;
-  }
-  return bytes;
-}
-
-async function hotpSha1(secretBytes: Uint8Array, counter: number): Promise<string> {
-  const key = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
-  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, counterToBytes(counter)));
-  const offset = signature[signature.length - 1] & 0x0f;
-  const binary = ((signature[offset] & 0x7f) << 24)
-    | ((signature[offset + 1] & 0xff) << 16)
-    | ((signature[offset + 2] & 0xff) << 8)
-    | (signature[offset + 3] & 0xff);
-  return String(binary % 10 ** TOTP_DIGITS).padStart(TOTP_DIGITS, "0");
-}
-
-async function verifyTotpWithGrace(code: string, secret: string): Promise<boolean> {
-  const normalized = String(code || "").replace(/\D/g, "").slice(0, TOTP_DIGITS);
-  if (normalized.length !== TOTP_DIGITS) return false;
-  // Keep otplib's normal validation as the first path, then add a controlled
-  // ±1-step grace window so a just-expired Authenticator code still works.
-  try {
-    if (authenticator.check(normalized, secret)) return true;
-  } catch {}
-  const secretBytes = base32ToBytes(secret);
-  if (!secretBytes.length) return false;
-  const currentCounter = Math.floor(Date.now() / 1000 / TOTP_STEP_SECONDS);
-  for (const drift of [-1, 0, 1]) {
-    if (await hotpSha1(secretBytes, currentCounter + drift) === normalized) return true;
-  }
-  return false;
 }
 
 // --- AES-256-GCM encryption for IMAP credentials ---
@@ -591,7 +472,6 @@ async function migrateEncPasswordsToPlaintext(supabase: any, encryptionSecret: s
       }
       if (changed) {
         await supabase.from("app_settings").upsert({ key: row.key, value: out }, { onConflict: "key" });
-        invalidateAllSettings();
       }
     }
   } catch (e) {
@@ -606,7 +486,6 @@ async function ensureSettingsSecretsEncrypted(supabase: any, key: string, value:
       const processed = await processConfigSecrets(value, value, encryptionSecret);
       if (JSON.stringify(processed) !== JSON.stringify(value)) {
         await supabase.from("app_settings").upsert({ key, value: processed }, { onConflict: "key" });
-        invalidateAllSettings();
       }
       return processed;
     }
@@ -614,7 +493,6 @@ async function ensureSettingsSecretsEncrypted(supabase: any, key: string, value:
       const processed = await processEmailAccountSecrets(value, value, encryptionSecret);
       if (JSON.stringify(processed) !== JSON.stringify(value)) {
         await supabase.from("app_settings").upsert({ key, value: processed }, { onConflict: "key" });
-        invalidateAllSettings();
       }
       return processed;
     }
@@ -646,46 +524,6 @@ async function auditLog(
     });
   } catch (e) { console.error("Audit log error:", e); }
 }
-
-
-// Fires a one-shot "Plan expired" Telegram alert to the admin and marks
-// plan_end_notified_at so neither this helper nor the plan-reminders cron
-// re-sends. Safe to call fire-and-forget from any request path that
-// detects mid-session expiry — races are settled by a conditional update
-// that only succeeds when the column is still null.
-async function notifyPlanExpiredOnce(supabase: any, user: any) {
-  try {
-    // Claim the notification slot atomically. If some other request
-    // (or the cron) already set the column, .select() returns 0 rows
-    // and we bail without sending a duplicate message.
-    const { data: claimed } = await supabase
-      .from("app_users")
-      .update({ plan_end_notified_at: new Date().toISOString() })
-      .eq("id", user.id)
-      .is("plan_end_notified_at", null)
-      .select("id")
-      .maybeSingle();
-    if (!claimed) return;
-
-    const botToken = Deno.env.get("TELEGRAM_BOT_TOKEN");
-    const chatId = Deno.env.get("TELEGRAM_CHAT_ID");
-    if (!botToken || !chatId) return;
-    const fmt = (iso: any) => { try { return new Date(iso).toISOString().replace("T", " ").replace(/\..+/, " UTC"); } catch { return String(iso || ""); } };
-    const startedLine = user.plan_starts_at ? `\nStarted: ${fmt(user.plan_starts_at)}` : "";
-    const text = [
-      "🛑 <b>Plan expired</b>",
-      `User: ${user.name || user.username || user.id}${startedLine}`,
-      `Ended: ${fmt(user.plan_ends_at)}`,
-      `<i>Detected mid-session — user was signed out.</i>`,
-    ].join("\n");
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true }),
-    }).catch(() => {});
-  } catch (e) { console.error("notifyPlanExpiredOnce error:", e); }
-}
-
 
 
 function isPrivateIp(ip: string): boolean {
@@ -1059,56 +897,6 @@ type ClientGeoPayload = {
   publicIpSource?: string;
   device?: DeviceFingerprint;
 };
-
-function compactClientGeoForPending(raw: ClientGeoPayload | null): ClientGeoPayload | null {
-  if (!raw) return null;
-  const device = raw.device;
-  return {
-    status: raw.status,
-    permissionState: raw.permissionState,
-    latitude: raw.latitude,
-    longitude: raw.longitude,
-    accuracy: raw.accuracy,
-    altitude: raw.altitude,
-    heading: raw.heading,
-    speed: raw.speed,
-    timestamp: raw.timestamp,
-    error: raw.error,
-    publicIp: raw.publicIp,
-    publicIpSource: raw.publicIpSource,
-    device: device ? {
-      userAgent: device.userAgent,
-      platform: device.platform,
-      vendor: device.vendor,
-      deviceName: device.deviceName,
-      deviceModel: device.deviceModel,
-      deviceVendor: device.deviceVendor,
-      deviceType: device.deviceType,
-      deviceInfoSource: device.deviceInfoSource,
-      deviceInfoConfidence: device.deviceInfoConfidence,
-      osName: device.osName,
-      osVersion: device.osVersion,
-      browserName: device.browserName,
-      browserVersion: device.browserVersion,
-      language: device.language,
-      screen: device.screen,
-      viewport: device.viewport,
-      timezone: device.timezone,
-      utcOffsetMinutes: device.utcOffsetMinutes,
-      touchPoints: device.touchPoints,
-      deviceMemory: device.deviceMemory,
-      hardwareConcurrency: device.hardwareConcurrency,
-      mobile: device.mobile,
-      uaPlatform: device.uaPlatform,
-      uaPlatformVersion: device.uaPlatformVersion,
-      uaModel: device.uaModel,
-      uaFullVersion: device.uaFullVersion,
-      network: device.network,
-      webdriver: device.webdriver,
-      fingerprintHash: device.fingerprintHash,
-    } : undefined,
-  };
-}
 
 function sanitizeDevice(raw: any): DeviceFingerprint | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -1853,7 +1641,7 @@ async function sendLoginNotification(
     let locationRequired = opts?.locationRequired;
     if (locationRequired === undefined) {
       try {
-        const { data: locRow } = await readSettingRow(supabase, "location_policy");
+        const { data: locRow } = await supabase.from("app_settings").select("value").eq("key", "location_policy").maybeSingle();
         const v: any = locRow?.value;
         locationRequired = !(v && typeof v === "object" && v.required === false);
       } catch { locationRequired = true; }
@@ -2060,15 +1848,13 @@ async function persistLoginEvent(
 async function loadWorkerUrls(supabase: any): Promise<string[]> {
   const workerUrls: string[] = [];
   try {
-    const [primaryCfUrls, emailAccounts] = await Promise.all([
-      getSetting<any[]>(supabase, "primary_cloudflare_urls"),
-      getSetting<any[]>(supabase, "email_accounts"),
-    ]);
-    if (Array.isArray(primaryCfUrls)) {
-      for (const u of primaryCfUrls) if (typeof u === "string" && u.length > 0 && !workerUrls.includes(u)) workerUrls.push(u);
+    const { data: primaryCfSetting } = await supabase.from("app_settings").select("value").eq("key", "primary_cloudflare_urls").single();
+    if (Array.isArray(primaryCfSetting?.value)) {
+      for (const u of primaryCfSetting.value) if (typeof u === "string" && u.length > 0 && !workerUrls.includes(u)) workerUrls.push(u);
     }
-    if (Array.isArray(emailAccounts)) {
-      for (const acct of emailAccounts) {
+    const { data: emailAccountsSetting } = await supabase.from("app_settings").select("value").eq("key", "email_accounts").single();
+    if (Array.isArray(emailAccountsSetting?.value)) {
+      for (const acct of emailAccountsSetting.value) {
         if (Array.isArray(acct.cloudflareUrls)) {
           for (const u of acct.cloudflareUrls) if (typeof u === "string" && u.length > 0 && !workerUrls.includes(u)) workerUrls.push(u);
         }
@@ -2147,29 +1933,18 @@ Deno.serve(async (originalReq) => {
   // Browser callers must use encrypted transport. Server-to-server callers
   // (Cloudflare worker with a verified app session token) may POST plaintext
   // for narrow internal reads like email_filters.
-  // Additionally: a small allowlist of PUBLIC actions (no session, no user
-  // data) may be POSTed as plaintext so the Cloudflare worker can front them
-  // with KV + ETag caching. bootstrap_public is the highest-volume such call
-  // (~470k reads/window) — worker cache turns it into a 304 hit.
   const SESSION_TOKEN_FOR_TRANSPORT = originalReq.headers.get("x-session-token") || "";
   const SEC_FETCH_SITE_FOR_TRANSPORT = originalReq.headers.get("sec-fetch-site") || "";
   const allowServerPlaintext = !!SESSION_TOKEN_FOR_TRANSPORT && !SEC_FETCH_SITE_FOR_TRANSPORT;
-  const PUBLIC_PLAINTEXT_ACTIONS = new Set(["bootstrap_public", "tv_login_fetch_job", "tv_login_report"]);
   let __ctx: EncryptedRequestContext | null = null;
   let __parsedBody: any = null;
   try {
-    // Always attempt plaintext parse; enforce per-action below so we can
-    // whitelist bootstrap_public without weakening any other action.
-    const __r = await readRequest(originalReq, { allowPlaintext: true });
+    const __r = await readRequest(originalReq, { allowPlaintext: allowServerPlaintext });
     __parsedBody = __r.body ?? {};
     __ctx = __r.encrypted ? __r.ctx : null;
-    if (!__ctx && !allowServerPlaintext && !PUBLIC_PLAINTEXT_ACTIONS.has(__parsedBody?.action)) {
-      return plaintextRejectedResponse();
-    }
   } catch (e) {
     if (e instanceof PlaintextRejectedError) return plaintextRejectedResponse();
     if (e instanceof TransportError) return transportErrorResponse(e);
-    console.warn("[manage-app] request_parse_failed", e instanceof Error ? e.message : String(e));
     return new Response(JSON.stringify({ success: false, error: "bad request" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
   const req = new Request(originalReq.url, {
@@ -2184,100 +1959,6 @@ Deno.serve(async (originalReq) => {
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
   );
-
-  // ---- GitHub Actions setup: DB-first config with env fallback -------------
-  async function loadGithubConfig(): Promise<{ pat: string; repo: string; hmacKey: string; updatedAt: string | null }> {
-    try {
-      const { data } = await supabase.from("github_config").select("pat, repo, hmac_key, updated_at").eq("id", 1).maybeSingle();
-      return {
-        pat: (data?.pat && String(data.pat)) || Deno.env.get("GITHUB_DISPATCH_PAT") || "",
-        repo: (data?.repo && String(data.repo)) || Deno.env.get("GITHUB_REPO") || "",
-        hmacKey: (data?.hmac_key && String(data.hmac_key)) || Deno.env.get("TV_REPORT_HMAC_KEY") || "",
-        updatedAt: data?.updated_at ? String(data.updated_at) : null,
-      };
-    } catch {
-      return {
-        pat: Deno.env.get("GITHUB_DISPATCH_PAT") || "",
-        repo: Deno.env.get("GITHUB_REPO") || "",
-        hmacKey: Deno.env.get("TV_REPORT_HMAC_KEY") || "",
-        updatedAt: null,
-      };
-    }
-  }
-  async function saveGithubConfig(patch: { pat?: string; repo?: string; hmac_key?: string; updated_by?: string | null }) {
-    const row: any = { id: 1, updated_at: new Date().toISOString() };
-    if (typeof patch.pat === "string") row.pat = patch.pat;
-    if (typeof patch.repo === "string") row.repo = patch.repo;
-    if (typeof patch.hmac_key === "string") row.hmac_key = patch.hmac_key;
-    if (patch.updated_by) row.updated_by = patch.updated_by;
-    const { error } = await supabase.from("github_config").upsert(row, { onConflict: "id" });
-    if (error) throw new Error(`Failed to save github_config: ${error.message}`);
-  }
-  async function ghApi(pat: string, path: string, init: RequestInit = {}): Promise<{ status: number; json: any; text: string }> {
-    const res = await fetch(`https://api.github.com${path}`, {
-      ...init,
-      headers: {
-        "Authorization": `Bearer ${pat}`,
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-        ...(init.headers || {}),
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-    const text = await res.text().catch(() => "");
-    let json: any = null;
-    try { json = text ? JSON.parse(text) : null; } catch {}
-    return { status: res.status, json, text };
-  }
-  async function pushGithubActionsSecret(pat: string, repo: string, name: string, value: string) {
-    const pk = await ghApi(pat, `/repos/${repo}/actions/secrets/public-key`);
-    if (pk.status !== 200 || !pk.json?.key || !pk.json?.key_id) {
-      throw new Error(`Could not read GitHub public key (${pk.status}). Ensure PAT has "Secrets: write" and repo access.`);
-    }
-    await sodium.ready;
-    const keyBytes = sodium.from_base64(String(pk.json.key), sodium.base64_variants.ORIGINAL);
-    const messageBytes = sodium.from_string(value);
-    const encrypted = sodium.crypto_box_seal(messageBytes, keyBytes);
-    const encryptedB64 = sodium.to_base64(encrypted, sodium.base64_variants.ORIGINAL);
-    const put = await ghApi(pat, `/repos/${repo}/actions/secrets/${encodeURIComponent(name)}`, {
-      method: "PUT",
-      body: JSON.stringify({ encrypted_value: encryptedB64, key_id: String(pk.json.key_id) }),
-    });
-    if (put.status !== 201 && put.status !== 204) {
-      throw new Error(`GitHub secret PUT failed (${put.status}): ${(put.text || "").slice(0, 200)}`);
-    }
-  }
-
-  function githubPermissionMessage(status: number, body: string, mode: "setup" | "test" | "run" = "run") {
-    const text = String(body || "");
-    if (status === 403 && /not accessible by personal access token/i.test(text)) {
-      return "GitHub PAT permission missing hai. Token edit karo → Repository access me correct repo select karo → Repository permissions me Actions: Read and write, Secrets: Read and write, Metadata: Read-only rakho. Contents permission ab required nahi hai.";
-    }
-    if (status === 404) {
-      return "GitHub repo/workflow access nahi mil raha. Repo field owner/name format me daalo, token me wahi repo selected hona chahiye, aur .github/workflows/tv-login.yml repo me present hona chahiye.";
-    }
-    if (status === 422 && /workflow_dispatch/i.test(text)) {
-      return "GitHub workflow_dispatch enabled nahi mila. Latest code GitHub me sync hone do, phir Admin → TV → Rotate/Sync dabao.";
-    }
-    const prefix = mode === "test" ? "GitHub runner test failed" : mode === "setup" ? "GitHub setup failed" : "GitHub Actions dispatch failed";
-    return text.slice(0, 300) || `${prefix} (${status}).`;
-  }
-
-  async function dispatchGithubWorkflow(pat: string, repo: string, payload: Record<string, string>) {
-    return await fetch(`https://api.github.com/repos/${repo}/actions/workflows/tv-login.yml/dispatches`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${pat}`,
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ ref: "main", inputs: payload }),
-      signal: AbortSignal.timeout(5000),
-    });
-  }
-
 
   // F5: split signing key (session tokens) from encryption key (IMAP passwords).
   // ENCRYPTION_SECRET must remain SUPABASE_SERVICE_ROLE_KEY so existing AES-GCM
@@ -2492,14 +2173,10 @@ Deno.serve(async (originalReq) => {
       } catch {}
     }
 
-    // Fire-and-forget touch, throttled to once per SESSION_TOUCH_MS per session
-    // to eliminate write amplification on last_seen_at (was a top WAL source).
-    if (shouldTouchSession(row.id)) {
-      supabase.from("app_sessions").update({ last_seen_at: new Date().toISOString() }).eq("id", row.id).then(() => {});
-    }
+    // Fire-and-forget touch
+    supabase.from("app_sessions").update({ last_seen_at: new Date().toISOString() }).eq("id", row.id).then(() => {});
     return session;
   }
-
 
 
 
@@ -2533,34 +2210,22 @@ Deno.serve(async (originalReq) => {
 
     // --- Public actions (no session needed) ---
 
-    // Bootstrap: returns profiles, recaptcha config, and worker URLs for fresh browsers.
-    // Supports ETag / If-None-Match. On match returns {success:true, unchanged:true, etag}
-    // with an ETag response header so the Cloudflare worker (and browsers) can serve 304s
-    // and never re-download the ~10 KB payload for the same version.
+    // Bootstrap: returns profiles, recaptcha config, and worker URLs for fresh browsers
     if (action === "bootstrap_public") {
-      const ifNoneMatch = (originalReq.headers.get("if-none-match") || "").replace(/^W\//, "").replace(/^"|"$/g, "");
-
       // Warm-instance cache: 5000 concurrent users all hitting this on load
       // otherwise re-runs the SELECTs and repays the egress. 10s TTL keeps
       // profile picker feeling live while removing 99% of DB reads.
       const now = Date.now();
       if (__bootstrapCache && (now - __bootstrapCache.at) < BOOTSTRAP_TTL_MS) {
-        const cachedEtag = (__bootstrapCache.payload as any)?.etag || "";
-        if (cachedEtag && ifNoneMatch && ifNoneMatch === cachedEtag) {
-          return new Response(JSON.stringify({ success: true, unchanged: true, etag: cachedEtag }), {
-            status: 200,
-            headers: { ...corsHeaders, "Content-Type": "application/json", ETag: `"${cachedEtag}"`, "Cache-Control": "public, max-age=30, stale-while-revalidate=60", "Access-Control-Expose-Headers": "ETag" },
-          });
-        }
         return new Response(JSON.stringify(__bootstrapCache.payload), {
-          headers: { ...corsHeaders, "Content-Type": "application/json", ...(cachedEtag ? { ETag: `"${cachedEtag}"`, "Cache-Control": "public, max-age=30, stale-while-revalidate=60", "Access-Control-Expose-Headers": "ETag" } : {}) },
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
       // Public profile picker — only non-admin users, minimal fields.
       // Order: pinned first, then admin-defined sort_order, then creation time.
       const usersP = supabase
         .from("app_users")
-        .select("id, username, name, role, profile_prefs, is_free, pinned, sort_order, expires_at, tv_override, feature_gmail, feature_tv, feature_link")
+        .select("id, username, name, role, profile_prefs, is_free, pinned, sort_order, expires_at, tv_override")
         .neq("role", "admin")
         .order("pinned", { ascending: false })
         .order("sort_order", { ascending: true, nullsFirst: false })
@@ -2569,7 +2234,7 @@ Deno.serve(async (originalReq) => {
       const settingsP = supabase
         .from("app_settings")
         .select("key,value")
-        .in("key", ["recaptcha", "primary_cloudflare_urls", "email_filters", "maintenance", "r2_storage", "location_policy", "free_avatar_cooldown", "free_avatar_last_change", "tv_feature", "contact_info"]);
+        .in("key", ["recaptcha", "primary_cloudflare_urls", "email_filters", "maintenance", "r2_storage", "location_policy", "free_avatar_cooldown", "free_avatar_last_change", "tv_feature"]);
 
       const [{ data: users, error: usersErr }, { data: settingRows }] = await Promise.all([usersP, settingsP]);
       if (usersErr) throw usersErr;
@@ -2622,10 +2287,9 @@ Deno.serve(async (originalReq) => {
           // If we auto-expired, persist the disable so admins see it too.
           if (expired && v.enabled) {
             try {
-              await upsertSetting(
-                supabase,
-                "maintenance",
-                { ...v, enabled: false, updated_at: new Date().toISOString() },
+              await supabase.from("app_settings").upsert(
+                { key: "maintenance", value: { ...v, enabled: false, updated_at: new Date().toISOString() } },
+                { onConflict: "key" }
               );
             } catch {}
           }
@@ -2654,10 +2318,6 @@ Deno.serve(async (originalReq) => {
           sortOrder: u.sort_order ?? null,
           expiresAt: u.expires_at || null,
           tvOverride: u.tv_override === "on" || u.tv_override === "off" ? u.tv_override : null,
-          feature_gmail: u.feature_gmail !== false,
-          feature_tv: u.feature_tv !== false,
-          feature_link: u.feature_link === true,
-          features: pickFeatures(u),
         }));
       const cdMinutesRaw = Number((settings.get("free_avatar_cooldown") as any)?.minutes);
       const freeAvatarCooldown = {
@@ -2666,35 +2326,12 @@ Deno.serve(async (originalReq) => {
       };
       const tvFeatureRaw: any = settings.get("tv_feature");
       const tvFeature = { enabled: tvFeatureRaw?.enabled !== false };
-      const contactInfoRaw: any = settings.get("contact_info") || null;
-      const contactInfo = contactInfoRaw && typeof contactInfoRaw === "object"
-        ? {
-            telegram: typeof contactInfoRaw.telegram === "string" ? contactInfoRaw.telegram : "",
-            whatsapp: typeof contactInfoRaw.whatsapp === "string" ? contactInfoRaw.whatsapp : "",
-            email: typeof contactInfoRaw.email === "string" ? contactInfoRaw.email : "",
-            note: typeof contactInfoRaw.note === "string" ? contactInfoRaw.note : "",
-          }
-        : { telegram: "", whatsapp: "", email: "", note: "" };
-      const basePayload: any = { success: true, users: mappedUsers, recaptcha, workerUrls, emailFilters, maintenance, avatarBaseUrl, locationPolicy: { required: globalLocationRequired }, freeAvatarCooldown, tvFeature, contactInfo };
-      // Compute a stable etag from the content. 16 hex chars (~64 bits) is
-      // enough uniqueness to catch any real content change without paying
-      // for the full 64-char hash in every response header.
-      const etagBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(basePayload)));
-      const etag = Array.from(new Uint8Array(etagBuf)).slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
-      // serverNow is added outside the etag so caching still works.
-      const payload = { ...basePayload, etag, serverNow: new Date().toISOString() };
+      const payload = { success: true, users: mappedUsers, recaptcha, workerUrls, emailFilters, maintenance, avatarBaseUrl, locationPolicy: { required: globalLocationRequired }, freeAvatarCooldown, tvFeature };
       __bootstrapCache = { at: now, payload };
-      if (ifNoneMatch && ifNoneMatch === etag) {
-        return new Response(JSON.stringify({ success: true, unchanged: true, etag, serverNow: payload.serverNow }), {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json", ETag: `"${etag}"`, "Cache-Control": "public, max-age=30, stale-while-revalidate=60", "Access-Control-Expose-Headers": "ETag" },
-        });
-      }
       return new Response(JSON.stringify(payload), {
-        headers: { ...corsHeaders, "Content-Type": "application/json", ETag: `"${etag}"`, "Cache-Control": "public, max-age=30, stale-while-revalidate=60", "Access-Control-Expose-Headers": "ETag" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
 
 
     if (action === "list") {
@@ -2702,15 +2339,13 @@ Deno.serve(async (originalReq) => {
       await requireAdmin(req);
       const { data, error } = await supabase
         .from("app_users")
-        .select("id, username, name, role, assigned_accounts, profile_prefs, session_limit, is_free, pinned, sort_order, expires_at, auto_delete, tv_override, feature_gmail, feature_tv, feature_link, plan_starts_at, plan_ends_at")
+        .select("id, username, name, role, assigned_accounts, profile_prefs, session_limit, is_free, pinned, sort_order, expires_at, auto_delete, tv_override")
         .order("pinned", { ascending: false })
         .order("sort_order", { ascending: true, nullsFirst: false })
         .order("created_at", { ascending: true });
       if (error) throw error;
-      const [availableAccountLabelsForList, globalLocationRequired] = await Promise.all([
-        loadAvailableAccountLabels(supabase),
-        loadGlobalLocationRequired(supabase),
-      ]);
+      const availableAccountLabelsForList = await loadAvailableAccountLabels(supabase);
+      const globalLocationRequired = await loadGlobalLocationRequired(supabase);
       const mappedData = (data || []).map((u: any) => ({
         ...u,
         assignedAccounts: normalizeAccountLabels(u.assigned_accounts || [], availableAccountLabelsForList).length > 0 ? normalizeAccountLabels(u.assigned_accounts || [], availableAccountLabelsForList) : null,
@@ -2723,31 +2358,8 @@ Deno.serve(async (originalReq) => {
         expiresAt: u.expires_at || null,
         autoDelete: u.auto_delete !== false,
         tvOverride: u.tv_override === "on" || u.tv_override === "off" ? u.tv_override : null,
-        features: pickFeatures(u),
-        planStartsAt: u.plan_starts_at || null,
-        planEndsAt: u.plan_ends_at || null,
       }));
       return new Response(JSON.stringify({ success: true, users: mappedData }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    if (action === "admin_location_policy") {
-      const username = typeof params.username === "string" ? params.username.trim() : "";
-      if (!username) {
-        return new Response(JSON.stringify({ success: true, required: false }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      const { data: adminRow } = await supabase
-        .from("app_users")
-        .select("id, role, profile_prefs")
-        .eq("username", username)
-        .maybeSingle();
-      const required = adminRow?.role === "admin"
-        ? isProfileLocationRequired(adminRow, await loadGlobalLocationRequired(supabase))
-        : false;
-      return new Response(JSON.stringify({ success: true, required }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -2783,6 +2395,8 @@ Deno.serve(async (originalReq) => {
 
       const globalLocationRequired = await loadGlobalLocationRequired(supabase);
       const locationRequired = isProfileLocationRequired(user, globalLocationRequired);
+      console.log("[login] profileLocationRequired:", locationRequired, "user:", user.id, "incoming clientGeo:", JSON.stringify(clientGeo));
+      console.log("[login] verified clientGeo:", JSON.stringify(verifiedClientGeo));
       if (locationRequired && (verifiedClientGeo?.status !== "granted" || typeof verifiedClientGeo.latitude !== "number" || typeof verifiedClientGeo.longitude !== "number")) {
         const status = verifiedClientGeo?.status || "missing";
         const errDetail = verifiedClientGeo?.error ? ` (${verifiedClientGeo.error})` : "";
@@ -2806,37 +2420,11 @@ Deno.serve(async (originalReq) => {
         await supabase.from("app_users").update({ password: hashed }).eq("id", user.id);
       }
 
-      // Plan-expiry gate: paid non-admin users whose plan_ends_at has passed
-      // cannot obtain a session. Free profiles and admin are unaffected.
-      if (user.role !== "admin" && !user.is_free && user.plan_ends_at) {
-        const endMs = Date.parse(String(user.plan_ends_at));
-        if (Number.isFinite(endMs) && endMs <= Date.now()) {
-          let contactInfo: any = null;
-          try {
-            const { data: ci } = await readSettingRow(supabase, "contact_info");
-            contactInfo = ci?.value || null;
-          } catch {}
-          await auditLog(supabase, "login_blocked_plan_finished", user.id, null, { username, planEndsAt: user.plan_ends_at }, ip);
-          // Fire an instant "Plan expired" Telegram alert if the cron hasn't
-          // already sent one. This closes the gap where a user's session
-          // hits expiry between cron ticks and the admin is left in the dark.
-          if (!(user as any).plan_end_notified_at) {
-            ((globalThis as any).EdgeRuntime?.waitUntil?.(notifyPlanExpiredOnce(supabase, user)) ?? notifyPlanExpiredOnce(supabase, user).catch(() => {}));
-          }
-          return new Response(JSON.stringify({ success: false, error: "plan_finished", planEndsAt: user.plan_ends_at, contactInfo }), {
-            status: 200,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-      }
-
       await auditLog(supabase, "login_success", user.id, null, { username, role: user.role }, ip);
-      if (user.role !== "admin") {
-        ((globalThis as any).EdgeRuntime?.waitUntil?.(sendLoginNotification(supabase, req, user, "success", verifiedClientGeo, { locationRequired })) ?? sendLoginNotification(supabase, req, user, "success", verifiedClientGeo, { locationRequired }).catch(() => {}));
-      }
+      ((globalThis as any).EdgeRuntime?.waitUntil?.(sendLoginNotification(supabase, req, user, "success", verifiedClientGeo, { locationRequired })) ?? sendLoginNotification(supabase, req, user, "success", verifiedClientGeo, { locationRequired }).catch(() => {}));
 
       if (user.role === "admin") {
-        const pendingPayload = { userId: user.id, username: user.username, role: "admin", pending: true, clientGeo: compactClientGeoForPending(verifiedClientGeo), locationRequired, exp: Date.now() + 15 * 60 * 1000 };
+        const pendingPayload = { userId: user.id, username: user.username, role: "admin", pending: true, exp: Date.now() + 15 * 60 * 1000 };
         const pendingToken = await createSessionToken(pendingPayload, SIGNING_SECRET);
         const tokenHash = await sha256Hex(pendingToken);
         await supabase.from("app_admin_2fa_state").delete().eq("user_id", user.id);
@@ -2854,9 +2442,6 @@ Deno.serve(async (originalReq) => {
             username: user.username,
             name: user.name,
             role: user.role,
-            profilePrefs: publicProfilePrefs(user.profile_prefs),
-            profileAvatar: user.profile_prefs?.avatarId || null,
-            locationRequired,
             totpConfigured: !!user.totp_secret,
             mustChangePassword: user.must_change_password,
           },
@@ -2867,7 +2452,7 @@ Deno.serve(async (originalReq) => {
       // Default: unlimited (0). When set, revoke oldest families so only
       // (maxPerUser - 1) remain active — the new login becomes the Nth session.
       try {
-        const { data: limitRow } = await readSettingRow(supabase, "session_limits");
+        const { data: limitRow } = await supabase.from("app_settings").select("value").eq("key", "session_limits").maybeSingle();
         const globalLimit = Math.max(0, Math.floor(Number((limitRow?.value as any)?.maxPerUser) || 0));
         // Per-user override wins when set (non-null). 0 = unlimited for this user even if a global cap exists.
         const perUser = (user as any).session_limit;
@@ -2946,9 +2531,6 @@ Deno.serve(async (originalReq) => {
           locationRequired,
           tvOverride: user.tv_override === "on" || user.tv_override === "off" ? user.tv_override : null,
           tvFeatureEnabled: await loadTvFeatureEnabled(supabase),
-          features: pickFeatures(user),
-          planStartsAt: (user as any).plan_starts_at || null,
-          planEndsAt: (user as any).plan_ends_at || null,
         },
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -2958,7 +2540,7 @@ Deno.serve(async (originalReq) => {
     }
 
     if (action === "create") {
-      const { username, password, name, role, assigned_accounts, is_free, expires_at, tv_override, plan_starts_at, plan_ends_at } = params;
+      const { username, password, name, role, assigned_accounts, is_free, expires_at, tv_override } = params;
       const isFree = !!is_free;
       if (!name) throw new Error("Name required");
       if (!isFree && (!username || !password)) throw new Error("Username and password required");
@@ -3010,25 +2592,10 @@ Deno.serve(async (originalReq) => {
         profile_prefs: { avatarId: null, locationRequired: finalRole !== "admin" },
         tv_override: normalizedTvOverride,
       };
-
-      // Paid users can have plan dates. Admin/free rows have them nulled by trigger.
-      if (!isFree && finalRole !== "admin") {
-        if (plan_starts_at) {
-          const t = Date.parse(String(plan_starts_at));
-          if (!Number.isFinite(t)) throw new Error("Invalid plan start date");
-          insertPayload.plan_starts_at = new Date(t).toISOString();
-        }
-        if (plan_ends_at) {
-          const t = Date.parse(String(plan_ends_at));
-          if (!Number.isFinite(t)) throw new Error("Invalid plan end date");
-          insertPayload.plan_ends_at = new Date(t).toISOString();
-        }
-      }
-
       const { data, error } = await supabase
         .from("app_users")
         .insert(insertPayload)
-        .select("id, username, name, role, assigned_accounts, profile_prefs, is_free, pinned, sort_order, expires_at, tv_override, plan_starts_at, plan_ends_at")
+        .select("id, username, name, role, assigned_accounts, profile_prefs, is_free, pinned, sort_order, expires_at, tv_override")
         .single();
       if (error) throw error;
       invalidateBootstrapCache();
@@ -3048,8 +2615,6 @@ Deno.serve(async (originalReq) => {
           sortOrder: data.sort_order ?? null,
           expiresAt: data.expires_at || null,
           tvOverride: data.tv_override === "on" || data.tv_override === "off" ? data.tv_override : null,
-          planStartsAt: (data as any).plan_starts_at || null,
-          planEndsAt: (data as any).plan_ends_at || null,
         },
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -3057,7 +2622,23 @@ Deno.serve(async (originalReq) => {
     }
 
     if (action === "delete") {
-      const session = await requireAdmin(req);
+      const tokenForImpersonate = req.headers.get("x-session-token") || "";
+      const session = await requireAdmin(req).catch(async (err) => {
+        const msg = err instanceof Error ? err.message : String(err || "");
+        if (!/revoked|expired|invalid|Authentication required/i.test(msg) || !tokenForImpersonate) throw err;
+        const recovered = (await verifySessionTokenDual(tokenForImpersonate, SIGNING_SECRET, LEGACY_SIGNING))
+          || (await verifySessionTokenDualAllowExpired(tokenForImpersonate, SIGNING_SECRET, LEGACY_SIGNING));
+        if (recovered?.role !== "admin" || !recovered?.userId) throw err;
+        const { data: adminStillExists } = await supabase
+          .from("app_users")
+          .select("id, role")
+          .eq("id", recovered.userId)
+          .eq("role", "admin")
+          .maybeSingle();
+        if (!adminStillExists) throw err;
+        recovered.sessionRowId = null;
+        return recovered;
+      });
       const { id } = params;
       const { error } = await supabase.from("app_users").delete().eq("id", id);
       if (error) throw error;
@@ -3184,8 +2765,12 @@ Deno.serve(async (originalReq) => {
       let cooldownNow: { minutes: number; lastAt: string | null } | null = null;
       if (isFree && avatarChanged) {
         const nowIso = new Date().toISOString();
-        await upsertSetting(supabase, "free_avatar_last_change", { at: nowIso, byUserId: session.userId });
-        const { data: cdRow } = await readSettingRow(supabase, "free_avatar_cooldown");
+        await supabase.from("app_settings").upsert(
+          { key: "free_avatar_last_change", value: { at: nowIso, byUserId: session.userId } },
+          { onConflict: "key" },
+        );
+        const { data: cdRow } = await supabase
+          .from("app_settings").select("value").eq("key", "free_avatar_cooldown").maybeSingle();
         const minutesRaw = Number((cdRow?.value as any)?.minutes);
         const minutes = Number.isFinite(minutesRaw) && minutesRaw > 0 ? Math.floor(minutesRaw) : 5;
         cooldownNow = { minutes, lastAt: nowIso };
@@ -3287,7 +2872,7 @@ Deno.serve(async (originalReq) => {
       if (!code || String(code).length < 6) throw new Error("TOTP code required");
       const { data: user, error } = await supabase.from("app_users").select("totp_secret").eq("id", pending.userId).single();
       if (error || !user?.totp_secret) throw new Error("TOTP is not configured");
-      if (!(await verifyTotpWithGrace(String(code), user.totp_secret))) throw new Error("Invalid Google Authenticator code");
+      if (!authenticator.check(String(code), user.totp_secret)) throw new Error("Invalid Google Authenticator code");
       await supabase.from("app_admin_2fa_state").update({ totp_verified_at: new Date().toISOString() }).eq("token_hash", tokenHash).eq("user_id", pending.userId);
       return new Response(JSON.stringify({ success: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -3305,30 +2890,15 @@ Deno.serve(async (originalReq) => {
       const { data: user, error } = await supabase.from("app_users").select("*").eq("id", pending.userId).single();
       if (error || !user || user.role !== "admin") throw new Error("Admin not found");
       const normalizedAssignedAccounts = await normalizeAssignedAccounts(supabase, user.assigned_accounts);
-      let adminSessionTtlMs = 60 * 60_000;
-      try {
-        const { data: sessionCfg } = await supabase
-          .from("app_settings")
-          .select("value")
-          .eq("key", "admin_session_config")
-          .maybeSingle();
-        const minutes = Number((sessionCfg?.value as any)?.timeoutMinutes);
-        if (Number.isFinite(minutes) && minutes > 0) adminSessionTtlMs = Math.max(1, Math.min(24 * 60, Math.floor(minutes))) * 60_000;
-      } catch {}
       const pair = await mintSessionPair(user.id, "admin", {
         userId: user.id,
         username: user.username,
         role: "admin",
         assignedAccounts: normalizedAssignedAccounts,
-      }, { ttlOverrideMs: adminSessionTtlMs });
+      });
       const workerUrls = await loadWorkerUrls(supabase);
       await supabase.from("app_admin_2fa_state").delete().eq("token_hash", tokenHash);
       await auditLog(supabase, "admin_2fa_finalized", user.id, user.id, {}, ip);
-      const adminLocationRequired = isProfileLocationRequired(user, await loadGlobalLocationRequired(supabase));
-      const pendingClientGeo = sanitizeClientGeo((pending as any).clientGeo);
-      const alertGeo = pendingClientGeo?.status === "granted" ? pendingClientGeo : null;
-      const adminAlert = sendLoginNotification(supabase, req, user, "success", alertGeo, { locationRequired: adminLocationRequired });
-      (globalThis as any).EdgeRuntime?.waitUntil?.(adminAlert) ?? adminAlert.catch(() => {});
       return new Response(JSON.stringify({
         success: true,
         sessionToken: pair.accessToken,
@@ -3346,10 +2916,9 @@ Deno.serve(async (originalReq) => {
           assignedAccounts: normalizedAssignedAccounts,
           profilePrefs: publicProfilePrefs(user.profile_prefs),
           profileAvatar: user.profile_prefs?.avatarId || null,
-          locationRequired: adminLocationRequired,
+          locationRequired: isProfileLocationRequired(user, await loadGlobalLocationRequired(supabase)),
           tvOverride: user.tv_override === "on" || user.tv_override === "off" ? user.tv_override : null,
           tvFeatureEnabled: await loadTvFeatureEnabled(supabase),
-          features: pickFeatures(user),
         },
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -3360,23 +2929,15 @@ Deno.serve(async (originalReq) => {
       let session: Record<string, any> | null = null;
 
       // Fully admin-only keys
-      const adminOnlyKeys = ["config", "cron_config", "vps_config", "r2_storage"];
+      const adminOnlyKeys = ["config", "cron_config", "vps_config"];
       if (adminOnlyKeys.includes(key)) {
         session = await requireAdmin(req);
       }
 
       // Keys that any authenticated user can read (with masked sensitive data)
-      const authenticatedKeys = ["primary_cloudflare_urls", "email_accounts", "recaptcha", "email_filters", "session_config", "admin_session_config", "session_limits", "ipwho_alert", "location_policy", "free_session_minutes", "tv_feature", "contact_info"];
+      const authenticatedKeys = ["primary_cloudflare_urls", "email_accounts", "recaptcha", "email_filters", "session_config", "admin_session_config", "session_limits", "ipwho_alert", "location_policy", "free_session_minutes", "tv_feature"];
       if (!session && authenticatedKeys.includes(key)) {
         session = await requireSession(req);
-      }
-
-      // Default-deny settings access: only explicitly listed keys are readable.
-      // This prevents newly-added secret settings (for example storage/API
-      // credentials) from becoming public through this generic endpoint.
-      const publicKeys = ["maintenance"];
-      if (!session && !publicKeys.includes(key)) {
-        throw new Error("Settings key is not public");
       }
 
       const { data } = await supabase
@@ -3394,21 +2955,6 @@ Deno.serve(async (originalReq) => {
 
       if (key === "tv_feature") {
         value = { enabled: value?.enabled !== false };
-      }
-
-      if (key === "r2_storage") {
-        const normalized = normalizeR2Config(value || {});
-        const hasSecret = typeof normalized.config.secretAccessKey === "string" && normalized.config.secretAccessKey.length > 0;
-        value = {
-          accountId: normalized.config.accountId,
-          accessKeyId: normalized.config.accessKeyId,
-          secretAccessKey: "",
-          bucket: normalized.config.bucket,
-          publicBaseUrl: normalized.config.publicBaseUrl,
-          pathPrefix: normalized.config.pathPrefix,
-          enabled: normalized.config.enabled,
-          secretAccessKeySet: hasSecret,
-        };
       }
 
       if (key === "config" && value && session?.role === "admin") {
@@ -3436,6 +2982,10 @@ Deno.serve(async (originalReq) => {
         value = safeValue;
       }
 
+      if (["primary_cloudflare_urls", "email_accounts"].includes(key)) {
+        await pushInboxConfigToWorkers(supabase, SIGNING_SECRET, ENCRYPTION_SECRET).catch((e) => console.warn("[worker-config] push skipped:", e?.message || e));
+      }
+
       return new Response(JSON.stringify({ success: true, value }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -3443,7 +2993,7 @@ Deno.serve(async (originalReq) => {
 
     if (action === "admin_get_vps_config") {
       await requireAdmin(req);
-      const { data } = await readSettingRow(supabase, "vps_config");
+      const { data } = await supabase.from("app_settings").select("value").eq("key", "vps_config").maybeSingle();
       return new Response(JSON.stringify({ success: true, value: publicVpsConfig(data?.value) }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -3453,207 +3003,13 @@ Deno.serve(async (originalReq) => {
       const session = await requireAdmin(req);
       const nextIp = String(params?.ip || "").trim() || "140.238.226.213";
       if (!/^[A-Za-z0-9:.[\]-]{3,255}$/.test(nextIp)) throw new Error("Enter a valid VPS IP or hostname");
-      let nextRunnerUrl = String(params?.runnerUrl || "").trim().replace(/\/+$/g, "");
-      if (nextRunnerUrl) {
-        try {
-          const u = new URL(nextRunnerUrl);
-          if (!/^https?:$/.test(u.protocol)) throw new Error("bad proto");
-          nextRunnerUrl = u.toString().replace(/\/+$/g, "");
-        } catch {
-          throw new Error("Runner URL must be like http://IP:8788");
-        }
-      }
-      const { data } = await readSettingRow(supabase, "vps_config");
+      const { data } = await supabase.from("app_settings").select("value").eq("key", "vps_config").maybeSingle();
       const prev = publicVpsConfig(data?.value);
-      const rawMode = String(params?.mode || "").trim().toLowerCase();
-      const nextMode: "vps" | "github" = rawMode === "github" ? "github" : "vps";
-      const value = { ...prev, ip: nextIp, runnerUrl: nextRunnerUrl, mode: nextMode };
+      const value = { ...prev, ip: nextIp };
       const { error } = await supabase.from("app_settings").upsert({ key: "vps_config", value }, { onConflict: "key" });
-      invalidateAllSettings();
       if (error) throw error;
-      await auditLog(supabase, "vps_access_updated", session.userId, null, { ip: nextIp, runnerUrl: nextRunnerUrl || null, mode: nextMode }, ip);
-      return new Response(JSON.stringify({ success: true, value: publicVpsConfig(value) }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    if (action === "admin_test_vps_runner") {
-      await requireAdmin(req);
-      const { data } = await readSettingRow(supabase, "vps_config");
-      const url = effectiveTvRunnerUrl(data?.value);
-      if (!url) {
-        return new Response(JSON.stringify({ success: false, ok: false, message: "Runner URL is not configured." }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      const started = Date.now();
-      try {
-        const r = await fetch(`${url}/health`, { method: "GET", signal: AbortSignal.timeout(5000) });
-        const txt = await r.text().catch(() => "");
-        let body: any = null; try { body = txt ? JSON.parse(txt) : null; } catch {}
-        const ms = Date.now() - started;
-        return new Response(JSON.stringify({
-          success: true,
-          ok: r.ok,
-          status: r.status,
-          latencyMs: ms,
-          url,
-          body: body ?? txt.slice(0, 400),
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      } catch (e: any) {
-        return new Response(JSON.stringify({
-          success: true,
-          ok: false,
-          status: 0,
-          latencyMs: Date.now() - started,
-          url,
-          message: e?.message || String(e),
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-    }
-
-    if (action === "admin_github_status") {
-      await requireAdmin(req);
-      const cfg = await loadGithubConfig();
-      const reveal = !!(params as any)?.reveal;
-      return new Response(JSON.stringify({
-        success: true,
-        configured: !!(cfg.pat && cfg.repo && cfg.hmacKey),
-        repo: cfg.repo || "",
-        hasPat: !!cfg.pat,
-        hasHmac: !!cfg.hmacKey,
-        updatedAt: cfg.updatedAt,
-        pat: reveal ? (cfg.pat || "") : undefined,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    if (action === "admin_github_setup") {
-      const admin = await requireAdmin(req);
-      const p = (params || {}) as any;
-      const patInput = String(p?.pat || "").trim();
-      const repoInput = String(p?.repo || "").trim();
-      const existing = await loadGithubConfig();
-      const pat = patInput || existing.pat;
-      if (!pat) throw new Error("A GitHub Personal Access Token is required.");
-
-      // 1) Validate PAT and get login
-      const me = await ghApi(pat, "/user");
-      if (me.status !== 200 || !me.json?.login) {
-        throw new Error(`GitHub token invalid (${me.status}). Create a fine-grained PAT with Actions: read+write, Secrets: read+write, Metadata: read.`);
-      }
-      const login = String(me.json.login);
-
-      // 2) Resolve repo: user-provided, existing config, or auto-detect
-      const candidates: string[] = [];
-      if (repoInput) candidates.push(repoInput.includes("/") ? repoInput : `${login}/${repoInput}`);
-      if (existing.repo) candidates.push(existing.repo);
-      candidates.push(`${login}/remix-of-inbox-debugger`, `${login}/inbox-debugger`);
-
-      let chosenRepo = "";
-      let checkedWorkflow = false;
-      for (const cand of candidates) {
-        const wf = await ghApi(pat, `/repos/${cand}/actions/workflows/tv-login.yml`);
-        if (wf.status === 200) { chosenRepo = cand; checkedWorkflow = true; break; }
-      }
-      // Fallback: scan user's repos for the workflow file (first page only)
-      if (!chosenRepo) {
-        const list = await ghApi(pat, `/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`);
-        const repos: any[] = Array.isArray(list.json) ? list.json : [];
-        for (const r of repos) {
-          const full = String(r?.full_name || "");
-          if (!full) continue;
-          const wf = await ghApi(pat, `/repos/${full}/actions/workflows/tv-login.yml`);
-          if (wf.status === 200) { chosenRepo = full; checkedWorkflow = true; break; }
-        }
-      }
-      if (!chosenRepo) {
-        throw new Error("Could not find the TV workflow. Repo field me exact owner/name daalo, token me wahi repo selected rakho, aur repo me .github/workflows/tv-login.yml present hona chahiye.");
-      }
-
-      // 3) Generate a fresh HMAC key
-      const hmacBytes = new Uint8Array(32);
-      crypto.getRandomValues(hmacBytes);
-      const hmacKey = Array.from(hmacBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
-
-      // 4) Push it as a GitHub Actions secret. TV_REPORT_URL is intentionally
-      // not a secret anymore; the workflow contains the public Edge Function
-      // URL inline so missing repo secrets cannot leave events stuck queued.
-      await pushGithubActionsSecret(pat, chosenRepo, "TV_REPORT_HMAC_KEY", hmacKey);
-
-      // 5) Save all three in DB
-      await saveGithubConfig({ pat, repo: chosenRepo, hmac_key: hmacKey, updated_by: (admin as any)?.id || null });
-
-      return new Response(JSON.stringify({
-        success: true,
-        ok: true,
-        repo: chosenRepo,
-        login,
-        workflowVerified: checkedWorkflow,
-        message: `Synced with ${chosenRepo}. HMAC key rotated and pushed to GitHub Actions secrets.`,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    if (action === "admin_test_github_runner") {
-      await requireAdmin(req);
-      const cfg = await loadGithubConfig();
-      const repo = cfg.repo;
-      const pat = cfg.pat;
-      if (!repo || !pat) {
-        return new Response(JSON.stringify({ success: true, ok: false, status: 0, message: "GitHub repo/token is not configured. Use the GitHub Setup card." }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      const testId = `tv-test-${Date.now()}`;
-      const headers = {
-        "Authorization": `Bearer ${pat}`,
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-      };
-      const started = Date.now();
-      const dispatch = await dispatchGithubWorkflow(pat, repo, { test_id: testId });
-      if (dispatch.status !== 204) {
-        const body = await dispatch.text().catch(() => "");
-        const msg = githubPermissionMessage(dispatch.status, body, "test");
-        return new Response(JSON.stringify({ success: true, ok: false, status: dispatch.status, message: msg }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      let found: any = null;
-      for (let i = 0; i < 6; i++) {
-        await new Promise((resolve) => setTimeout(resolve, i === 0 ? 700 : 1200));
-        const runs = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/tv-login.yml/runs?event=workflow_dispatch&per_page=10`, {
-          method: "GET",
-          headers,
-          signal: AbortSignal.timeout(5000),
-        });
-        const text = await runs.text().catch(() => "");
-        let json: any = null;
-        try { json = text ? JSON.parse(text) : null; } catch {}
-        const list = Array.isArray(json?.workflow_runs) ? json.workflow_runs : [];
-        found = list.find((r: any) => {
-          const created = Date.parse(String(r?.created_at || ""));
-          return Number.isFinite(created) && created >= started - 30_000;
-        }) || null;
-        if (found && found.status !== "queued") break;
-      }
-
-      const elapsed = Date.now() - started;
-      if (!found) {
-        return new Response(JSON.stringify({ success: true, ok: true, status: 204, githubStatus: "dispatched", latencyMs: elapsed, message: "GitHub accepted the test dispatch. If it does not appear in Actions, check repo Actions permissions.", testId }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      const ghStatus = String(found.status || "unknown");
-      const conclusion = String(found.conclusion || "");
-      const ok = ghStatus === "in_progress" || ghStatus === "completed";
-      const message = ghStatus === "queued"
-        ? "GitHub accepted it, but the workflow is still queued. Check Actions runner availability."
-        : ghStatus === "completed"
-          ? `GitHub workflow executed${conclusion ? ` (${conclusion})` : ""}.`
-          : "GitHub workflow started.";
-      return new Response(JSON.stringify({ success: true, ok, status: 204, githubStatus: ghStatus, conclusion, latencyMs: elapsed, runUrl: found.html_url || "", message, testId }), {
+      await auditLog(supabase, "vps_access_updated", session.userId, null, { ip: nextIp }, ip);
+      return new Response(JSON.stringify({ success: true, value }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -3701,51 +3057,6 @@ Deno.serve(async (originalReq) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    if (action === "save_contact_info") {
-      const session = await requireAdmin(req);
-      const raw = ((params as any)?.value && typeof (params as any).value === "object") ? (params as any).value : (params || {});
-      const trim = (v: any, max = 240) => typeof v === "string" ? v.trim().slice(0, max) : "";
-      const arr = (v: any, max = 240, limit = 10): string[] => {
-        if (!Array.isArray(v)) return [];
-        const out: string[] = [];
-        const seen = new Set<string>();
-        for (const it of v) {
-          const s = trim(it, max);
-          if (!s || seen.has(s)) continue;
-          seen.add(s);
-          out.push(s);
-          if (out.length >= limit) break;
-        }
-        return out;
-      };
-      const telegrams = arr(raw.telegrams);
-      const whatsapps = arr(raw.whatsapps);
-      const emails = arr(raw.emails);
-      // Legacy singular fields — if arrays given, first entry wins; else keep singular.
-      const telegram = telegrams[0] || trim(raw.telegram);
-      const whatsapp = whatsapps[0] || trim(raw.whatsapp);
-      const email = emails[0] || trim(raw.email);
-      const value = {
-        telegram, whatsapp, email,
-        telegrams: telegrams.length ? telegrams : (telegram ? [telegram] : []),
-        whatsapps: whatsapps.length ? whatsapps : (whatsapp ? [whatsapp] : []),
-        emails: emails.length ? emails : (email ? [email] : []),
-        note: trim(raw.note, 500),
-      };
-      const { error } = await supabase
-        .from("app_settings")
-        .upsert({ key: "contact_info", value }, { onConflict: "key" });
-      if (error) throw error;
-      invalidateBootstrapCache();
-      await auditLog(supabase, "settings_changed", session.userId, null, { key: "contact_info" }, ip);
-      return new Response(JSON.stringify({ success: true, value }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-
-
 
 
     if (action === "set_settings") {
@@ -3844,7 +3155,7 @@ Deno.serve(async (originalReq) => {
 
     if (action === "update_user") {
       const session = await requireAdmin(req);
-      const { id, assigned_accounts, session_limit, pinned, is_free, name, username, expires_at, location_required, auto_delete, plan_starts_at, plan_ends_at } = params;
+      const { id, assigned_accounts, session_limit, pinned, is_free, name, username, expires_at, location_required, auto_delete } = params;
       const tvOverrideProvided = params.tv_override !== undefined || params.tvOverride !== undefined;
       const tvOverrideValue = params.tv_override !== undefined ? params.tv_override : params.tvOverride;
       if (!id) throw new Error("User ID required");
@@ -3897,48 +3208,16 @@ Deno.serve(async (originalReq) => {
           patch.session_limit = n;
         }
       }
-      if (params?.features && typeof params.features === "object") {
-        const f = params.features as any;
-        if (typeof f.gmail === "boolean") patch.feature_gmail = f.gmail;
-        if (typeof f.tv === "boolean")    patch.feature_tv    = f.tv;
-        if (typeof f.link === "boolean")  patch.feature_link  = f.link;
-      }
-      // Plan dates: allowed only for paid non-admin users; trigger enforces this too.
-      if (plan_starts_at !== undefined) {
-        if (plan_starts_at === null || plan_starts_at === "") {
-          patch.plan_starts_at = null;
-        } else {
-          const t = Date.parse(String(plan_starts_at));
-          if (!Number.isFinite(t)) throw new Error("Invalid plan start date");
-          patch.plan_starts_at = new Date(t).toISOString();
-        }
-      }
-      if (plan_ends_at !== undefined) {
-        if (plan_ends_at === null || plan_ends_at === "") {
-          patch.plan_ends_at = null;
-        } else {
-          const t = Date.parse(String(plan_ends_at));
-          if (!Number.isFinite(t)) throw new Error("Invalid plan end date");
-          patch.plan_ends_at = new Date(t).toISOString();
-        }
-        // Reset reminder throttles so admin extending a plan will re-arm reminders.
-        patch.plan_last_reminder_at = null;
-      }
       if (Object.keys(patch).length === 0) {
         return new Response(JSON.stringify({ success: true, noop: true }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const { data: updatedUser, error } = await supabase
-        .from("app_users")
-        .update(patch)
-        .eq("id", id)
-        .select("id, feature_gmail, feature_tv, feature_link, tv_override, plan_starts_at, plan_ends_at")
-        .maybeSingle();
+      const { error } = await supabase.from("app_users").update(patch).eq("id", id);
       if (error) throw error;
       invalidateBootstrapCache();
       await auditLog(supabase, "user_updated", session.userId, id, patch, ip);
-      return new Response(JSON.stringify({ success: true, user: updatedUser ? { ...updatedUser, features: pickFeatures(updatedUser), tvOverride: updatedUser.tv_override === "on" || updatedUser.tv_override === "off" ? updatedUser.tv_override : null, planStartsAt: updatedUser.plan_starts_at || null, planEndsAt: updatedUser.plan_ends_at || null } : null }), {
+      return new Response(JSON.stringify({ success: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -3969,7 +3248,8 @@ Deno.serve(async (originalReq) => {
 
       // Same CAPTCHA gate as paid login: if admin enabled reCAPTCHA globally,
       // free profile entry also requires a solved captcha token.
-      const { data: recaptchaSettingFree } = await readSettingRow(supabase, "recaptcha");
+      const { data: recaptchaSettingFree } = await supabase
+        .from("app_settings").select("value").eq("key", "recaptcha").maybeSingle();
       const recaptchaCfgFree: any = recaptchaSettingFree?.value || null;
       if (recaptchaCfgFree?.enabled === true) {
         if (!recaptchaCfgFree?.secretKey) throw new Error("CAPTCHA is misconfigured. Contact admin.");
@@ -4016,7 +3296,7 @@ Deno.serve(async (originalReq) => {
       // stay in sync — each login gets its own countdown from its own login time.
       let freeMinutes = 0;
       try {
-        const { data: fsRow } = await readSettingRow(supabase, "session_config");
+        const { data: fsRow } = await supabase.from("app_settings").select("value").eq("key", "session_config").maybeSingle();
         const m = Number((fsRow?.value as any)?.timeoutMinutes);
         if (Number.isFinite(m) && m > 0) freeMinutes = Math.floor(m);
       } catch {}
@@ -4058,9 +3338,6 @@ Deno.serve(async (originalReq) => {
           locationRequired: freeLocationRequired,
           tvOverride: user.tv_override === "on" || user.tv_override === "off" ? user.tv_override : null,
           tvFeatureEnabled: await loadTvFeatureEnabled(supabase),
-          features: pickFeatures(user),
-          planStartsAt: (user as any).plan_starts_at || null,
-          planEndsAt: (user as any).plan_ends_at || null,
         },
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -4110,9 +3387,6 @@ Deno.serve(async (originalReq) => {
           locationRequired: isProfileLocationRequired(targetUser, await loadGlobalLocationRequired(supabase)),
           tvOverride: targetUser.tv_override === "on" || targetUser.tv_override === "off" ? targetUser.tv_override : null,
           tvFeatureEnabled: await loadTvFeatureEnabled(supabase),
-          features: pickFeatures(targetUser),
-          planStartsAt: (targetUser as any).plan_starts_at || null,
-          planEndsAt: (targetUser as any).plan_ends_at || null,
           impersonated: true,
           adminId: session.userId,
         },
@@ -4396,34 +3670,12 @@ Deno.serve(async (originalReq) => {
       const session = await requireSession(req);
       const { data: user, error } = await supabase
         .from("app_users")
-        .select("id, username, name, role, must_change_password, assigned_accounts, profile_prefs, is_free, expires_at, auto_delete, tv_override, feature_gmail, feature_tv, feature_link, last_workflow_view, plan_starts_at, plan_ends_at, plan_end_notified_at")
+        .select("id, username, name, role, must_change_password, assigned_accounts, profile_prefs, is_free, expires_at, auto_delete, tv_override")
         .eq("id", session.userId)
         .single();
       if (error || !user) throw new Error("Account not found");
-
-      // Enforce plan expiry mid-session: if the plan ended after login, revoke.
-      if (user.role !== "admin" && !user.is_free && user.plan_ends_at) {
-        const endMs = Date.parse(String(user.plan_ends_at));
-        if (Number.isFinite(endMs) && endMs <= Date.now()) {
-          let contactInfo: any = null;
-          try {
-            const { data: ci } = await readSettingRow(supabase, "contact_info");
-            contactInfo = ci?.value || null;
-          } catch {}
-          // Instant "Plan expired" TG alert if cron hasn't sent one yet.
-          if (!(user as any).plan_end_notified_at) {
-            ((globalThis as any).EdgeRuntime?.waitUntil?.(notifyPlanExpiredOnce(supabase, user)) ?? notifyPlanExpiredOnce(supabase, user).catch(() => {}));
-          }
-          return new Response(JSON.stringify({ success: false, error: "plan_finished", planEndsAt: user.plan_ends_at, contactInfo }), {
-            status: 200,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-      }
-
       return new Response(JSON.stringify({
         success: true,
-        serverNow: new Date().toISOString(),
         user: {
           id: user.id,
           username: user.username,
@@ -4439,44 +3691,11 @@ Deno.serve(async (originalReq) => {
           locationRequired: isProfileLocationRequired(user, await loadGlobalLocationRequired(supabase)),
           tvOverride: user.tv_override === "on" || user.tv_override === "off" ? user.tv_override : null,
           tvFeatureEnabled: await loadTvFeatureEnabled(supabase),
-          features: pickFeatures(user),
-          planStartsAt: (user as any).plan_starts_at || null,
-          planEndsAt: (user as any).plan_ends_at || null,
-          lastWorkflowView: ((): string | null => {
-            const v = (user as any).last_workflow_view;
-            return v === "gmail" || v === "tv" || v === "link" ? v : null;
-          })(),
           impersonated: session.impersonated === true,
           adminId: session.impersonated === true ? (session.adminId || null) : null,
         },
 
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    if (action === "set_workflow_view") {
-      const session = await requireSession(req);
-      const raw = String((params || {}).view || "").toLowerCase();
-      if (raw !== "gmail" && raw !== "tv" && raw !== "link") {
-        throw new Error("Invalid workflow view");
-      }
-      // Verify the user actually has that feature enabled before persisting.
-      const { data: u } = await supabase
-        .from("app_users")
-        .select("feature_gmail, feature_tv, feature_link")
-        .eq("id", session.userId)
-        .maybeSingle();
-      const allowed = raw === "gmail" ? (u?.feature_gmail !== false)
-        : raw === "tv" ? (u?.feature_tv !== false)
-        : (u?.feature_link === true);
-      if (!allowed) throw new Error("Workflow not available for this account");
-      const { error } = await supabase
-        .from("app_users")
-        .update({ last_workflow_view: raw })
-        .eq("id", session.userId);
-      if (error) throw error;
-      return new Response(JSON.stringify({ success: true, lastWorkflowView: raw }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
     }
 
     if (action === "logout") {
@@ -4500,13 +3719,10 @@ Deno.serve(async (originalReq) => {
 
       const { data: u, error: uErr } = await supabase
         .from("app_users")
-        .select("assigned_accounts, role, is_free, feature_gmail")
+        .select("assigned_accounts, role, is_free")
         .eq("id", session.userId)
         .single();
       if (uErr || !u) throw new Error("User not found");
-      if (u.role !== "admin" && u.feature_gmail === false) {
-        return new Response(JSON.stringify({ success: true, emails: [], deleted_ids: [], next_since: cursor, feature_disabled: "gmail" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
 
       const isAdmin = u.role === "admin";
       const labels: string[] | null = Array.isArray(u.assigned_accounts) && u.assigned_accounts.length > 0
@@ -4523,14 +3739,14 @@ Deno.serve(async (originalReq) => {
       let visibilityFilters: EmailVisibilityFilters = DEFAULT_EMAIL_FILTERS;
       if (!isAdmin) {
         try {
-          const { data: filterRow } = await readSettingRow(supabase, "email_filters");
+          const { data: filterRow } = await supabase.from("app_settings").select("value").eq("key", "email_filters").maybeSingle();
           visibilityFilters = normalizeEmailFilters(filterRow?.value);
         } catch {}
       }
 
       let dateCutoff: string | null = null;
       if (!isAdmin) {
-        const { data: visRow } = await readSettingRow(supabase, "email_visibility");
+        const { data: visRow } = await supabase.from("app_settings").select("value").eq("key", "email_visibility").maybeSingle();
         const vis = (visRow?.value || {}) as { enabled?: boolean; days?: number };
         if (vis?.enabled && Number(vis.days) > 0) {
           const cut = new Date();
@@ -4602,7 +3818,7 @@ Deno.serve(async (originalReq) => {
       let visibilityFilters: EmailVisibilityFilters = DEFAULT_EMAIL_FILTERS;
       if (!isAdmin) {
         try {
-          const { data: filterRow } = await readSettingRow(supabase, "email_filters");
+          const { data: filterRow } = await supabase.from("app_settings").select("value").eq("key", "email_filters").maybeSingle();
           visibilityFilters = normalizeEmailFilters(filterRow?.value);
         } catch {}
       }
@@ -4643,7 +3859,7 @@ Deno.serve(async (originalReq) => {
     if (action === "admin_clear_inbox") {
       const session = await requireAdmin(req);
       const { mode, accountLabel, days, confirm } = params as any;
-      let q = supabase.from("cached_emails").update({ destroyed: true, html: null, preview: null, otp: null, cached_at: new Date().toISOString() });
+      let q = supabase.from("cached_emails").update({ destroyed: true, html: null, preview: null, otp: null, cached_at: new Date().toISOString() }, { count: "exact" });
       let details: any = { mode };
       if (mode === "all") {
         if (confirm !== "DELETE ALL") throw new Error("Confirmation phrase required");
@@ -4662,11 +3878,11 @@ Deno.serve(async (originalReq) => {
         throw new Error("Invalid mode");
       }
       q = q.eq("destroyed", false);
-      const { error } = await q;
+      const { error, count } = await q.select("id");
       if (error) throw error;
-      details.completed = true;
+      details.deleted = count || 0;
       await auditLog(supabase, "admin_clear_inbox", session.userId, null, details, ip);
-      return new Response(JSON.stringify({ success: true }), {
+      return new Response(JSON.stringify({ success: true, deleted: count || 0 }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -4684,7 +3900,7 @@ Deno.serve(async (originalReq) => {
       const [aggN, aggR] = await Promise.all([
         supabase
           .from("notifications")
-          .select("id, created_at, expires_at, publish_at")
+          .select("id, created_at, expires_at, publish_at", { count: "exact", head: false })
           .or(`audience.eq.all,target_user_id.eq.${session.userId}`),
         supabase
           .from("notification_reads")
@@ -4905,20 +4121,41 @@ Deno.serve(async (originalReq) => {
 
     if (action === "admin_list_notifications") {
       await requireAdmin(req);
-      const notesP = supabase
+      const { data: notes, error } = await supabase
         .from("notifications")
-        .select("id, title, body, description, image_url, category, priority, icon, platform_icon, kind, sub_kind, locked, show_frequency, mode, action_url, action_label, action2_url, action2_label, audience, target_user_id, created_at, expires_at, publish_at, group_key, pinned")
+        .select("*")
         .order("created_at", { ascending: false })
         .limit(200);
-      const totalUsersP = supabase.from("app_users").select("id", { count: "planned", head: true }).neq("role", "admin");
-      const [{ data: notes, error }, { count: totalUsers }] = await Promise.all([notesP, totalUsersP]);
       if (error) throw error;
+      const ids = (notes || []).map((n: any) => n.id);
+      const readCounts = new Map<string, number>();
+      const seenCounts = new Map<string, number>();
+      const clickCounts = new Map<string, number>();
+      const deletedCounts = new Map<string, number>();
+      if (ids.length) {
+        const { data: reads } = await supabase
+          .from("notification_reads")
+          .select("notification_id, read_at, seen_at, deleted_at")
+          .in("notification_id", ids);
+        for (const r of reads || []) {
+          if (r.seen_at) seenCounts.set(r.notification_id, (seenCounts.get(r.notification_id) || 0) + 1);
+          if (r.read_at) readCounts.set(r.notification_id, (readCounts.get(r.notification_id) || 0) + 1);
+          if (r.deleted_at) deletedCounts.set(r.notification_id, (deletedCounts.get(r.notification_id) || 0) + 1);
+        }
+        const { data: evs } = await supabase
+          .from("notification_events")
+          .select("notification_id, event")
+          .in("notification_id", ids)
+          .eq("event", "clicked");
+        for (const e of evs || []) clickCounts.set(e.notification_id, (clickCounts.get(e.notification_id) || 0) + 1);
+      }
+      const { count: totalUsers } = await supabase.from("app_users").select("id", { count: "exact", head: true }).neq("role", "admin");
       const payload = (notes || []).map((n: any) => ({
         ...n,
-        readCount: 0,
-        seenCount: 0,
-        clickCount: 0,
-        deletedCount: 0,
+        readCount: readCounts.get(n.id) || 0,
+        seenCount: seenCounts.get(n.id) || 0,
+        clickCount: clickCounts.get(n.id) || 0,
+        deletedCount: deletedCounts.get(n.id) || 0,
         totalRecipients: n.audience === "all" ? (totalUsers || 0) : 1,
       }));
       return new Response(JSON.stringify({ success: true, notifications: payload }), {
@@ -4949,23 +4186,19 @@ Deno.serve(async (originalReq) => {
       const readsMap = new Map<string, any>();
       const clickedMap = new Map<string, string>();
       if (userIds.length) {
-        const [readsRes, evsRes] = await Promise.all([
-          supabase
-            .from("notification_reads")
-            .select("user_id, read_at, seen_at, deleted_at")
-            .eq("notification_id", notification_id)
-            .in("user_id", userIds),
-          supabase
-            .from("notification_events")
-            .select("user_id, event, created_at")
-            .eq("notification_id", notification_id)
-            .eq("event", "clicked")
-            .in("user_id", userIds)
-            .order("created_at", { ascending: false }),
-        ]);
-        const reads = readsRes.data || [];
-        const evs = evsRes.data || [];
-        for (const r of reads) readsMap.set(r.user_id, r);
+        const { data: reads } = await supabase
+          .from("notification_reads")
+          .select("user_id, read_at, seen_at, deleted_at")
+          .eq("notification_id", notification_id)
+          .in("user_id", userIds);
+        for (const r of reads || []) readsMap.set(r.user_id, r);
+        const { data: evs } = await supabase
+          .from("notification_events")
+          .select("user_id, event, created_at")
+          .eq("notification_id", notification_id)
+          .eq("event", "clicked")
+          .in("user_id", userIds)
+          .order("created_at", { ascending: false });
         for (const e of evs || []) {
           if (!clickedMap.has(e.user_id)) clickedMap.set(e.user_id, e.created_at);
         }
@@ -5058,10 +4291,7 @@ Deno.serve(async (originalReq) => {
     if (action === "list_login_events") {
       await requireAdmin(req);
       const { limit, user_id, risk, since, search } = params || {};
-      let q = supabase
-        .from("login_events")
-        .select("id, created_at, username, role, event, risk_score, ip, ip_source, isp, asn, city, region, country, country_code, device_brand, device_model, device_type, os_name, os_version, browser_name, browser_version, gps_lat, gps_lon, gps_accuracy, is_vpn, is_proxy, is_tor, is_hosting, is_new_device, impossible_travel, fingerprint_hash")
-        .order("created_at", { ascending: false });
+      let q = supabase.from("login_events").select("*").order("created_at", { ascending: false });
       if (user_id) q = q.eq("user_id", user_id);
       if (risk) q = q.eq("risk_score", risk);
       if (since) q = q.gte("created_at", since);
@@ -5069,7 +4299,7 @@ Deno.serve(async (originalReq) => {
         const s = search.trim();
         q = q.or(`username.ilike.%${s}%,ip.ilike.%${s}%,city.ilike.%${s}%,country.ilike.%${s}%,isp.ilike.%${s}%`);
       }
-      q = q.limit(Math.min(Number(limit) || 150, 300));
+      q = q.limit(Math.min(Number(limit) || 200, 1000));
       const { data, error } = await q;
       if (error) throw error;
       return new Response(JSON.stringify({ success: true, events: data || [] }), {
@@ -5090,21 +4320,21 @@ Deno.serve(async (originalReq) => {
       };
       const lim = Math.min(Number(limit) || 100, 500);
       const off = Math.max(Number(offset) || 0, 0);
-      // Rows page only. Fetch one extra row to answer "has next page" without
-      // a count query; exact counts were one of the biggest cached_emails IO drains.
+      // Rows page
       let dataQ = supabase
         .from("cached_emails")
         .select("id, subject, from_address, to_address, date, otp, preview, account_label, cached_at")
         .eq("destroyed", false)
         .order("date", { ascending: false });
-      dataQ = buildFilters(dataQ).range(off, off + lim);
-      const { data, error } = await dataQ;
+      dataQ = buildFilters(dataQ).range(off, off + lim - 1);
+      // Separate exact head count — reliable even when combined with or()/range().
+      let countQ = supabase.from("cached_emails").select("id", { count: "exact", head: true }).eq("destroyed", false);
+      countQ = buildFilters(countQ);
+      const [{ data, error }, { count, error: countErr }] = await Promise.all([dataQ, countQ]);
       if (error) throw error;
-      const rows = Array.isArray(data) ? data : [];
-      const hasMore = rows.length > lim;
-      const page = hasMore ? rows.slice(0, lim) : rows;
-      const approximateTotal = off + page.length + (hasMore ? 1 : 0);
-      return new Response(JSON.stringify({ success: true, emails: page, total: approximateTotal, hasMore }), {
+      if (countErr) throw countErr;
+      auditLog(supabase, "admin_list_emails", session.userId, null, { count: data?.length || 0, total: count || 0, search: search || null, accountLabel: accountLabel || null }, ip).catch(() => {});
+      return new Response(JSON.stringify({ success: true, emails: data || [], total: count || 0 }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -5125,14 +4355,14 @@ Deno.serve(async (originalReq) => {
       const { ids } = (params || {}) as any;
       if (!Array.isArray(ids) || ids.length === 0) throw new Error("ids required");
       const clean = ids.filter((x: any) => typeof x === "string").slice(0, 500);
-      const { error } = await supabase
+      const { error, count } = await supabase
         .from("cached_emails")
-        .update({ destroyed: true, html: null, preview: null, otp: null, cached_at: new Date().toISOString() })
+        .update({ destroyed: true, html: null, preview: null, otp: null, cached_at: new Date().toISOString() }, { count: "exact" })
         .in("id", clean)
         .eq("destroyed", false);
       if (error) throw error;
-      await auditLog(supabase, "admin_delete_emails", session.userId, null, { ids: clean, requested: clean.length }, ip);
-      return new Response(JSON.stringify({ success: true, deleted: clean.length }), {
+      await auditLog(supabase, "admin_delete_emails", session.userId, null, { ids: clean, deleted: count || 0 }, ip);
+      return new Response(JSON.stringify({ success: true, deleted: count || 0 }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -5146,7 +4376,6 @@ Deno.serve(async (originalReq) => {
         days: Math.max(1, Math.min(365, Number(days) || 30)),
       };
       const { error } = await supabase.from("app_settings").upsert({ key: "email_visibility", value: clean }, { onConflict: "key" });
-      invalidateAllSettings();
       if (error) throw error;
       await auditLog(supabase, "email_visibility_set", session.userId, null, clean, ip);
       return new Response(JSON.stringify({ success: true, value: clean }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -5174,7 +4403,6 @@ Deno.serve(async (originalReq) => {
         return new Response(JSON.stringify({ success: false, error: msg }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
       await supabase.from("app_settings").upsert({ key: "email_auto_delete", value: clean }, { onConflict: "key" });
-      invalidateAllSettings();
       await auditLog(supabase, "email_cleanup_apply", session.userId, null, clean, ip);
       return new Response(JSON.stringify({ success: true, value: clean }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -5202,37 +4430,26 @@ Deno.serve(async (originalReq) => {
       // Kick everything off in PARALLEL server-side. Edge → Postgres latency is
       // ~1-5ms each, so 12 parallel queries return in ~50-150ms total.
       const usersP = supabase.from("app_users")
-        .select("id, username, name, role, assigned_accounts, profile_prefs, session_limit, is_free, pinned, sort_order, expires_at, tv_override, feature_gmail, feature_tv, feature_link, plan_starts_at, plan_ends_at")
+        .select("id, username, name, role, assigned_accounts, profile_prefs, session_limit, is_free, pinned, sort_order, expires_at, tv_override")
         .order("created_at", { ascending: true });
 
-      // Fast estimated counts via pg_class.reltuples — head:true+exact was
-      // triggering full index-only scans on every admin mount. `planned`
-      // returns the planner estimate (updated by autovacuum) with 0 IO.
-      const emailsCountP = supabase.from("cached_emails").select("id", { count: "planned", head: true }).eq("destroyed", false);
+      const emailsCountP = supabase.from("cached_emails").select("id", { count: "exact", head: true }).eq("destroyed", false);
 
       const notesP = supabase.from("notifications").select("*").order("created_at", { ascending: false }).limit(200);
-      const totalUsersP = supabase.from("app_users").select("id", { count: "planned", head: true }).neq("role", "admin");
+      const totalUsersP = supabase.from("app_users").select("id", { count: "exact", head: true }).neq("role", "admin");
 
       const settingsKeys = includeSettings
-        ? ["recaptcha", "config", "primary_cloudflare_urls", "email_filters", "email_accounts", "session_config", "admin_session_config", "session_limits", "ipwho_alert", "maintenance", "r2_storage", "vps_config", "email_visibility", "email_auto_delete", "cron_config", "netflix_promo", "location_policy", "free_session_minutes", "free_avatar_cooldown", "tv_feature"]
-        : ["email_accounts", "location_policy"];
+        ? ["recaptcha", "config", "primary_cloudflare_urls", "email_filters", "email_accounts", "session_config", "admin_session_config", "session_limits", "ipwho_alert", "maintenance", "r2_storage", "email_visibility", "email_auto_delete", "cron_config", "netflix_promo", "location_policy", "free_session_minutes", "free_avatar_cooldown", "tv_feature"]
+        : [];
 
-      const settingsP = supabase.from("app_settings").select("key,value").in("key", settingsKeys);
-      const cookiesP = includeSettings
-        ? supabase.from("imap_cookies").select("id, imap_user, label, filename, format, count, updated_at").order("updated_at", { ascending: false })
-        : Promise.resolve({ data: [] as any[] });
-      const loginEventsP = includeSettings
-        ? supabase.from("login_events")
-            .select("id, created_at, username, role, event, risk_score, ip, ip_source, isp, asn, city, region, country, country_code, device_brand, device_model, device_type, os_name, os_version, browser_name, browser_version, gps_lat, gps_lon, gps_accuracy, is_vpn, is_proxy, is_tor, is_hosting, is_new_device, impossible_travel, fingerprint_hash")
-            .order("created_at", { ascending: false })
-            .limit(150)
+      const settingsP = settingsKeys.length
+        ? supabase.from("app_settings").select("key,value").in("key", settingsKeys)
         : Promise.resolve({ data: [] as any[] });
 
-      const [usersRes, emailsCountRes, notesRes, totalUsersRes, settingsRes, cookiesRes, loginEventsRes] = await Promise.all([usersP, emailsCountP, notesP, totalUsersP, settingsP, cookiesP, loginEventsP]);
+      const [usersRes, emailsCountRes, notesRes, totalUsersRes, settingsRes] = await Promise.all([usersP, emailsCountP, notesP, totalUsersP, settingsP]);
+      const availableAccountLabelsForList = await loadAvailableAccountLabels(supabase);
       const settingsMapForUsers = new Map((settingsRes.data || []).map((row: any) => [row.key, row.value]));
       const globalLocationRequired = isGlobalLocationRequired(settingsMapForUsers.get("location_policy"));
-      const emailAccountsForLabels = Array.isArray(settingsMapForUsers.get("email_accounts")) ? settingsMapForUsers.get("email_accounts") : [];
-      const availableAccountLabelsForList = emailAccountsForLabels.map((acc: any) => String(acc?.label || acc?.user || "").trim()).filter(Boolean);
 
       // Users mapping
       const users = (usersRes.data || []).map((u: any) => ({
@@ -5246,25 +4463,39 @@ Deno.serve(async (originalReq) => {
         sortOrder: u.sort_order ?? null,
         expiresAt: u.expires_at || null,
         tvOverride: u.tv_override === "on" || u.tv_override === "off" ? u.tv_override : null,
-        features: pickFeatures(u),
-        planStartsAt: u.plan_starts_at || null,
-        planEndsAt: u.plan_ends_at || null,
       }));
 
+      // Notification stats — 2 more queries but only if there are notes
+      const noteIds = (notesRes.data || []).map((n: any) => n.id);
+      const readCounts = new Map<string, number>();
+      const seenCounts = new Map<string, number>();
+      const clickCounts = new Map<string, number>();
+      const deletedCounts = new Map<string, number>();
+      if (noteIds.length) {
+        const [readsRes, evsRes] = await Promise.all([
+          supabase.from("notification_reads").select("notification_id, read_at, seen_at, deleted_at").in("notification_id", noteIds),
+          supabase.from("notification_events").select("notification_id, event").in("notification_id", noteIds).eq("event", "clicked"),
+        ]);
+        for (const r of readsRes.data || []) {
+          if (r.seen_at) seenCounts.set(r.notification_id, (seenCounts.get(r.notification_id) || 0) + 1);
+          if (r.read_at) readCounts.set(r.notification_id, (readCounts.get(r.notification_id) || 0) + 1);
+          if (r.deleted_at) deletedCounts.set(r.notification_id, (deletedCounts.get(r.notification_id) || 0) + 1);
+        }
+        for (const e of evsRes.data || []) clickCounts.set(e.notification_id, (clickCounts.get(e.notification_id) || 0) + 1);
+      }
       const totalUsers = totalUsersRes.count || 0;
       const notifications = (notesRes.data || []).map((n: any) => ({
         ...n,
-        readCount: 0,
-        seenCount: 0,
-        clickCount: 0,
-        deletedCount: 0,
+        readCount: readCounts.get(n.id) || 0,
+        seenCount: seenCounts.get(n.id) || 0,
+        clickCount: clickCounts.get(n.id) || 0,
+        deletedCount: deletedCounts.get(n.id) || 0,
         totalRecipients: n.audience === "all" ? totalUsers : 1,
       }));
 
       // Settings map + R2 normalization
       const settings: Record<string, any> = {};
       let r2: any = null;
-      let vpsAccess: any = null;
       for (const row of (settingsRes as any).data || []) {
         if (row.key === "r2_storage") {
           const normalized = normalizeR2Config(row.value || {});
@@ -5272,19 +4503,17 @@ Deno.serve(async (originalReq) => {
           r2 = {
             accountId: normalized.config.accountId,
             accessKeyId: normalized.config.accessKeyId,
-            secretAccessKey: "",
+            secretAccessKey: normalized.config.secretAccessKey,
             bucket: normalized.config.bucket,
             publicBaseUrl: normalized.config.publicBaseUrl,
             pathPrefix: normalized.config.pathPrefix,
             enabled: normalized.config.enabled,
             secretAccessKeySet: hasSecret,
           };
-        } else if (row.key === "vps_config") {
-          vpsAccess = publicVpsConfig(row.value || {});
         } else {
           const safeValue = await ensureSettingsSecretsEncrypted(supabase, row.key, row.value, ENCRYPTION_SECRET);
-          if (row.key === "config") settings[row.key] = await maskConfigForAdmin(safeValue, ENCRYPTION_SECRET);
-          else if (row.key === "email_accounts") settings[row.key] = await maskEmailAccountsForAdmin(safeValue, ENCRYPTION_SECRET);
+          if (row.key === "config") settings[row.key] = await maskConfigForAdmin(safeValue);
+          else if (row.key === "email_accounts") settings[row.key] = await maskEmailAccountsForAdmin(safeValue);
           else settings[row.key] = safeValue;
         }
       }
@@ -5294,19 +4523,16 @@ Deno.serve(async (originalReq) => {
         users,
         emailsTotal: emailsCountRes.count || 0,
         notifications,
-        cookies: includeSettings ? ((cookiesRes.data || []).map((row: any) => ({ ...row, count: Math.max(Number(row.count) || 0, 0) }))) : undefined,
-        loginEvents: includeSettings ? (loginEventsRes.data || []) : undefined,
         settings: includeSettings ? settings : undefined,
         r2: includeSettings ? r2 : undefined,
-        vpsAccess: includeSettings ? vpsAccess : undefined,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "private, max-age=15, stale-while-revalidate=60" } });
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     // ---------- R2 storage: admin-only ----------
 
     if (action === "admin_get_r2_config") {
       await requireAdmin(req);
-      const { data } = await readSettingRow(supabase, "r2_storage");
+      const { data } = await supabase.from("app_settings").select("value").eq("key", "r2_storage").maybeSingle();
       const v: any = data?.value || {};
       const normalized = normalizeR2Config(v);
       const hasSecret = typeof normalized.config.secretAccessKey === "string" && normalized.config.secretAccessKey.length > 0;
@@ -5315,7 +4541,7 @@ Deno.serve(async (originalReq) => {
         config: {
           accountId: normalized.config.accountId,
           accessKeyId: normalized.config.accessKeyId,
-          secretAccessKey: "",
+          secretAccessKey: normalized.config.secretAccessKey,
           bucket: normalized.config.bucket,
           publicBaseUrl: normalized.config.publicBaseUrl,
           pathPrefix: normalized.config.pathPrefix,
@@ -5329,34 +4555,20 @@ Deno.serve(async (originalReq) => {
     if (action === "admin_save_r2_config") {
       const session = await requireAdmin(req);
       const p = (params || {}) as any;
-      const { data: existing } = await readSettingRow(supabase, "r2_storage");
+      const { data: existing } = await supabase.from("app_settings").select("value").eq("key", "r2_storage").maybeSingle();
       const prev: any = existing?.value || {};
       const normalized = normalizeR2Config(p, prev.secretAccessKey || "");
       if (normalized.errors.length) throw new Error(normalized.errors.join(" "));
       const value = normalized.config;
       const { error } = await supabase.from("app_settings").upsert({ key: "r2_storage", value }, { onConflict: "key" });
-      invalidateAllSettings();
       if (error) throw error;
       await auditLog(supabase, "r2_config_updated", session.userId, null, { bucket: value.bucket, enabled: value.enabled }, ip);
-      return new Response(JSON.stringify({
-        success: true,
-        warnings: normalized.warnings,
-        config: {
-          accountId: value.accountId,
-          accessKeyId: value.accessKeyId,
-          secretAccessKey: "",
-          bucket: value.bucket,
-          publicBaseUrl: value.publicBaseUrl,
-          pathPrefix: value.pathPrefix,
-          enabled: value.enabled,
-          secretAccessKeySet: typeof value.secretAccessKey === "string" && value.secretAccessKey.length > 0,
-        },
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ success: true, warnings: normalized.warnings, config: value }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     if (action === "admin_r2_test") {
       await requireAdmin(req);
-      const { data } = await readSettingRow(supabase, "r2_storage");
+      const { data } = await supabase.from("app_settings").select("value").eq("key", "r2_storage").maybeSingle();
       const saved: any = data?.value || {};
       const draft: any = params || {};
       const hasDraftConfig = draft.useSaved !== true && ["accountId", "accessKeyId", "secretAccessKey", "bucket", "publicBaseUrl", "pathPrefix", "enabled"].some((k) => k in draft);
@@ -5407,7 +4619,7 @@ Deno.serve(async (originalReq) => {
       await requireAdmin(req);
       const p = (params || {}) as any;
       if (!p?.dataBase64 || !p?.filename) throw new Error("dataBase64 and filename required");
-      const { data } = await readSettingRow(supabase, "r2_storage");
+      const { data } = await supabase.from("app_settings").select("value").eq("key", "r2_storage").maybeSingle();
       const v: any = data?.value || {};
       if (!v.enabled) throw new Error("R2 is not enabled — configure it in Settings → Storage");
       const normalized = normalizeR2Config(v);
@@ -5444,7 +4656,7 @@ Deno.serve(async (originalReq) => {
       const session = await requireAdmin(req);
       const p = (params || {}) as any;
       if (!p?.dataBase64 || !p?.filename) throw new Error("Private key file required");
-      const { data: r2Row } = await readSettingRow(supabase, "r2_storage");
+      const { data: r2Row } = await supabase.from("app_settings").select("value").eq("key", "r2_storage").maybeSingle();
       const r2Value: any = r2Row?.value || {};
       if (!r2Value.enabled) throw new Error("R2 is not enabled — configure it in Settings → Storage first");
       const normalized = normalizeR2Config(r2Value);
@@ -5470,7 +4682,7 @@ Deno.serve(async (originalReq) => {
         throw new Error(`R2 upload failed: ${r2FailureMessage(res.status, t, normalized.warnings)}`);
       }
 
-      const { data: existing } = await readSettingRow(supabase, "vps_config");
+      const { data: existing } = await supabase.from("app_settings").select("value").eq("key", "vps_config").maybeSingle();
       const prev = publicVpsConfig(existing?.value);
       if (prev.keyObjectKey) {
         try { await r2Delete(creds, prev.keyObjectKey); } catch {}
@@ -5485,7 +4697,6 @@ Deno.serve(async (originalReq) => {
         hasKey: true,
       };
       const { error } = await supabase.from("app_settings").upsert({ key: "vps_config", value }, { onConflict: "key" });
-      invalidateAllSettings();
       if (error) throw error;
       await auditLog(supabase, "vps_key_uploaded", session.userId, null, { filename: safeFilename, size: bytes.length }, ip);
       return new Response(JSON.stringify({ success: true, value }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -5493,10 +4704,10 @@ Deno.serve(async (originalReq) => {
 
     if (action === "admin_download_vps_key") {
       const session = await requireAdmin(req);
-      const { data: vpsRow } = await readSettingRow(supabase, "vps_config");
+      const { data: vpsRow } = await supabase.from("app_settings").select("value").eq("key", "vps_config").maybeSingle();
       const vps = publicVpsConfig(vpsRow?.value);
       if (!vps.keyObjectKey) throw new Error("No private key has been uploaded yet");
-      const { data: r2Row } = await readSettingRow(supabase, "r2_storage");
+      const { data: r2Row } = await supabase.from("app_settings").select("value").eq("key", "r2_storage").maybeSingle();
       const r2Value: any = r2Row?.value || {};
       if (!r2Value.enabled) throw new Error("R2 is not enabled — configure it in Settings → Storage first");
       const normalized = normalizeR2Config(r2Value);
@@ -5519,1046 +4730,10 @@ Deno.serve(async (originalReq) => {
       return new Response(JSON.stringify({ success: true, filename: vps.keyFilename, dataBase64: btoa(binary) }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    if (action === "admin_delete_vps_key") {
-      const session = await requireAdmin(req);
-      const { data: vpsRow } = await readSettingRow(supabase, "vps_config");
-      const vps = publicVpsConfig(vpsRow?.value);
-      if (!vps.keyObjectKey) {
-        return new Response(JSON.stringify({ success: true, value: vps, message: "No key was stored." }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-      // Best-effort delete from R2 (never fail the request if R2 is unreachable).
-      try {
-        const { data: r2Row } = await readSettingRow(supabase, "r2_storage");
-        const r2Value: any = r2Row?.value || {};
-        if (r2Value.enabled) {
-          const normalized = normalizeR2Config(r2Value);
-          const cfg = normalized.config;
-          if (cfg.accountId && cfg.accessKeyId && cfg.secretAccessKey && cfg.bucket) {
-            const { r2Delete } = await import("../_shared/r2Sign.ts");
-            await r2Delete({ accountId: cfg.accountId, accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey, bucket: cfg.bucket }, vps.keyObjectKey).catch(() => {});
-          }
-        }
-      } catch { /* swallow — metadata wipe below is what actually matters */ }
-      const value = { ...vps, keyFilename: "vps-private-key.pem", keyObjectKey: "", keyUploadedAt: "", keySize: 0, hasKey: false };
-      const { error } = await supabase.from("app_settings").upsert({ key: "vps_config", value }, { onConflict: "key" });
-      invalidateAllSettings();
-      if (error) throw error;
-      await auditLog(supabase, "vps_key_deleted", session.userId, null, { previous: vps.keyFilename }, ip);
-      return new Response(JSON.stringify({ success: true, value: publicVpsConfig(value) }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    const parseStoredCookieCount = (raw: unknown): number => {
-      const text = String(raw || "").trim();
-      if (!text) return 0;
-
-      const countJson = () => {
-        const data = JSON.parse(text);
-        const arr = Array.isArray(data)
-          ? data
-          : Array.isArray(data?.cookies)
-          ? data.cookies
-          : data && typeof data === "object" && data.name
-          ? [data]
-          : [];
-        return arr.filter((c: any) => String(c?.name ?? c?.Name ?? "").trim()).length;
-      };
-
-      try {
-        if (text.startsWith("{") || text.startsWith("[")) return countJson();
-      } catch (_) {}
-
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-
-      const netscape = lines.filter((rawLine) => {
-        const line = rawLine.replace(/^#HttpOnly_/i, "");
-        if (!line || line.startsWith("#")) return false;
-        const parts = line.split("\t");
-        return parts.length >= 7 && !!parts[5];
-      }).length;
-      if (netscape > 0) return netscape;
-
-      if (text.includes("\t")) {
-        const rows = lines.map((l) => l.split("\t"));
-        const start = /^name$/i.test((rows[0]?.[0] || "").trim()) ? 1 : 0;
-        let devtools = 0;
-        for (let i = start; i < rows.length; i++) {
-          const name = (rows[i]?.[0] || "").trim();
-          if (name && !/\s/.test(name) && rows[i].length >= 3) devtools++;
-        }
-        if (devtools > 0) return devtools;
-      }
-
-      let header = 0;
-      for (const rawLine of text.split(/\r?\n/)) {
-        const line = rawLine.replace(/^\s*(set-cookie|cookie)\s*:\s*/i, "").trim();
-        if (!line || line.startsWith("#")) continue;
-        const pieces = line.split(";").map((p) => p.trim()).filter(Boolean);
-        for (let i = 0; i < pieces.length; i++) {
-          const eq = pieces[i].indexOf("=");
-          if (eq <= 0) continue;
-          const name = pieces[i].slice(0, eq).trim();
-          if (!name || /\s/.test(name)) continue;
-          if (/^(path|domain|expires|max-age|samesite|secure|httponly|priority|partitioned)$/i.test(name)) continue;
-          header++;
-          const rest = pieces.slice(i + 1).join(";").toLowerCase();
-          if (/(^|;|\s)(path|domain|expires|max-age|samesite|secure|httponly)\b/.test(rest)) break;
-        }
-      }
-      if (header > 0) return header;
-
-      try { return countJson(); } catch (_) {}
-      return lines.length || (text ? 1 : 0);
-    };
-
-    const DIRECT_LINK_COOKIE_KEYS = ["NetflixId", "SecureNetflixId", "nfvdid", "OptanonConsent"];
-    const decodeCookieValue = (value: unknown) => {
-      const s = String(value || "");
-      if (!s || !s.includes("%")) return s;
-      try { return decodeURIComponent(s); } catch { return s; }
-    };
-    const extractNetflixIdFromStoredCookies = (raw: unknown): string => {
-      const text = String(raw || "").trim();
-      if (!text) return "";
-      const cookieDict: Record<string, string> = {};
-
-      for (const rawLine of text.split(/\r?\n/)) {
-        const line = rawLine.trim().replace(/^#HttpOnly_/i, "");
-        if (!line || line.startsWith("#")) continue;
-        const parts = line.split("\t");
-        if (parts.length >= 7 && DIRECT_LINK_COOKIE_KEYS.includes(parts[5])) {
-          cookieDict[parts[5]] = decodeCookieValue(parts[6]);
-        }
-      }
-
-      try {
-        const data = JSON.parse(text);
-        const addCookie = (cookie: any) => {
-          const name = String(cookie?.name ?? cookie?.Name ?? "");
-          const value = cookie?.value ?? cookie?.Value;
-          if (DIRECT_LINK_COOKIE_KEYS.includes(name) && typeof value === "string") cookieDict[name] = decodeCookieValue(value);
-        };
-        if (Array.isArray(data)) data.forEach(addCookie);
-        else if (data && typeof data === "object") {
-          for (const key of DIRECT_LINK_COOKIE_KEYS) {
-            if (typeof data[key] === "string") cookieDict[key] = decodeCookieValue(data[key]);
-          }
-          if (Array.isArray(data.cookies)) data.cookies.forEach(addCookie);
-        }
-      } catch (_) {}
-
-      for (const key of DIRECT_LINK_COOKIE_KEYS) {
-        if (cookieDict[key]) continue;
-        const match = new RegExp(`(?<!\\w)${key}=([^;,\\s]+)`, "i").exec(text);
-        if (match?.[1]) cookieDict[key] = decodeCookieValue(match[1]);
-      }
-
-      return cookieDict.NetflixId || "";
-    };
-
-    const NETFLIX_DIRECT_LINK_QUERY: Record<string, string> = {
-      appVersion: "15.48.1",
-      config: '{"gamesInTrailersEnabled":"false","isTrailersEvidenceEnabled":"false","cdsMyListSortEnabled":"true","kidsBillboardEnabled":"true","addHorizontalBoxArtToVideoSummariesEnabled":"false","skOverlayTestEnabled":"false","homeFeedTestTVMovieListsEnabled":"false","baselineOnIpadEnabled":"true","trailersVideoIdLoggingFixEnabled":"true","postPlayPreviewsEnabled":"false","bypassContextualAssetsEnabled":"false","roarEnabled":"false","useSeason1AltLabelEnabled":"false","disableCDSSearchPaginationSectionKinds":["searchVideoCarousel"],"cdsSearchHorizontalPaginationEnabled":"true","searchPreQueryGamesEnabled":"true","kidsMyListEnabled":"true","billboardEnabled":"true","useCDSGalleryEnabled":"true","contentWarningEnabled":"true","videosInPopularGamesEnabled":"true","avifFormatEnabled":"false","sharksEnabled":"true"}',
-      device_type: "NFAPPL-02-",
-      esn: "NFAPPL-02-IPHONE8%3D1-PXA-02026U9VV5O8AUKEAEO8PUJETCGDD4PQRI9DEB3MDLEMD0EACM4CS78LMD334MN3MQ3NMJ8SU9O9MVGS6BJCURM1PH1MUTGDPF4S4200",
-      idiom: "phone",
-      iosVersion: "15.8.5",
-      isTablet: "false",
-      languages: "en-US",
-      locale: "en-US",
-      maxDeviceWidth: "375",
-      model: "saget",
-      modelType: "IPHONE8-1",
-      odpAware: "true",
-      path: '["account","token","default"]',
-      pathFormat: "graph",
-      pixelDensity: "2.0",
-      progressive: "false",
-      responseFormat: "json",
-    };
-
-    const NETFLIX_DIRECT_LINK_HEADERS: Record<string, string> = {
-      "User-Agent": "Argo/15.48.1 (iPhone; iOS 15.8.5; Scale/2.00)",
-      "x-netflix.request.attempt": "1",
-      "x-netflix.request.client.user.guid": "A4CS633D7VCBPE2GPK2HL4EKOE",
-      "x-netflix.context.profile-guid": "A4CS633D7VCBPE2GPK2HL4EKOE",
-      "x-netflix.request.routing": '{"path":"/nq/mobile/nqios/~15.48.0/user","control_tag":"iosui_argo"}',
-      "x-netflix.context.app-version": "15.48.1",
-      "x-netflix.argo.translated": "true",
-      "x-netflix.context.form-factor": "phone",
-      "x-netflix.context.sdk-version": "2012.4",
-      "x-netflix.client.appversion": "15.48.1",
-      "x-netflix.context.max-device-width": "375",
-      "x-netflix.context.ab-tests": "",
-      "x-netflix.tracing.cl.useractionid": "4DC655F2-9C3C-4343-8229-CA1B003C3053",
-      "x-netflix.client.type": "argo",
-      "x-netflix.client.ftl.esn": "NFAPPL-02-IPHONE8=1-PXA-02026U9VV5O8AUKEAEO8PUJETCGDD4PQRI9DEB3MDLEMD0EACM4CS78LMD334MN3MQ3NMJ8SU9O9MVGS6BJCURM1PH1MUTGDPF4S4200",
-      "x-netflix.context.locales": "en-US",
-      "x-netflix.context.top-level-uuid": "90AFE39F-ADF1-4D8A-B33E-528730990FE3",
-      "x-netflix.client.iosversion": "15.8.5",
-      "accept-language": "en-US;q=1",
-      "x-netflix.argo.abtests": "",
-      "x-netflix.context.os-version": "15.8.5",
-      "x-netflix.request.client.context": '{"appState":"foreground"}',
-      "x-netflix.context.ui-flavor": "argo",
-      "x-netflix.argo.nfnsm": "9",
-      "x-netflix.context.pixel-density": "2.0",
-      "x-netflix.request.toplevel.uuid": "90AFE39F-ADF1-4D8A-B33E-528730990FE3",
-      "x-netflix.request.client.timezoneid": "Asia/Dhaka",
-    };
-
-    const maskTvEmail = (em: string) => {
-      const email = String(em || "").trim().toLowerCase();
-      const at = email.indexOf("@");
-      if (at < 0) return email;
-      const local = email.slice(0, at);
-      const domain = email.slice(at);
-      if (!local) return email;
-      if (local.length <= 6) return `${local[0] || ""}•••${local.slice(-1)}${domain}`;
-      return `${local.slice(0, 3)}•••${local.slice(-3)}${domain}`;
-    };
-
-    const resolveTvAccountCandidates = (allAccounts: any[], assignedAccounts: any[]) => {
-      const assigned = (Array.isArray(assignedAccounts) ? assignedAccounts : [])
-        .map((v: any) => String(v || "").trim().toLowerCase())
-        .filter(Boolean);
-      const showAll = assigned.length === 0 || assigned.includes("all");
-
-      // Each recipient filter is treated as a distinct TV account.
-      // If an account has no recipient filters, the IMAP user itself acts as
-      // the single implicit filter (legacy behavior).
-      const out: Array<{ account_key: string; label: string; imap_user: string; login_email: string; recipient_filters: string[] }> = [];
-      const seen = new Set<string>();
-      (Array.isArray(allAccounts) ? allAccounts : []).forEach((acc: any, idx: number) => {
-        const label = String(acc?.label || acc?.user || "").trim();
-        const imap_user = String(acc?.user || "").trim().toLowerCase();
-        if (!imap_user) return;
-        const recipientFilters = normalizeRecipientFilters(acc?.recipientFilters);
-        const filters = recipientFilters.length > 0 ? recipientFilters : [imap_user];
-        for (const filter of filters) {
-          const loginEmail = String(filter || "").trim().toLowerCase();
-          if (!loginEmail) continue;
-          const matchKeys = new Set([
-            label.toLowerCase(),
-            imap_user,
-            loginEmail,
-            ...recipientFilters,
-          ].filter(Boolean));
-          if (!showAll && !assigned.some((item) => matchKeys.has(item))) continue;
-          const key = `${idx}:${imap_user}:${loginEmail}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          out.push({
-            account_key: key,
-            label: filters.length > 1 ? `${label} · ${loginEmail}` : label,
-            imap_user,
-            login_email: loginEmail,
-            recipient_filters: recipientFilters,
-          });
-        }
-      });
-      return out;
-    };
-
-    // ── Telegram reporting for TV auto-login flow ──
-    // Emits a rich, HTML-formatted alert for every TV login attempt, result,
-    // cookie-expiry issue, and user-initiated error report.
-    const escapeTgHtml = (s: unknown) =>
-      String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const redactTgValue = (value: unknown) =>
-      String(value ?? "").replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, (m) => maskTvEmail(m));
-    const humanTgKey = (key: string) => key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    const splitTiming = (message: string) => {
-      const idx = message.toLowerCase().indexOf("| timing");
-      if (idx < 0) return { main: message, timing: "" };
-      return { main: message.slice(0, idx).trim(), timing: message.slice(idx + 1).trim() };
-    };
-    const sendTvLoginTelegram = async (kind: string, fields: Record<string, unknown>) => {
-      try {
-        const tg = await getTelegramConfig(supabase);
-        if (!tg) return;
-        const titleMap: Record<string, string> = {
-          attempt: "🚀 TV Login — Attempt started",
-          success: "✅ TV Login — Signed in successfully",
-          invalid_code: "❌ TV Login — Invalid code",
-          cookies_expired: "🍪 TV Login — Cookies expired",
-          no_cookies: "⚠️ TV Login — No cookies configured",
-          not_configured: "⚙️ TV Login — Not configured",
-          runner_timeout: "⏳ TV Login — Runner slow",
-          netflix_timeout: "⏳ TV Login — Netflix slow",
-          error: "🔥 TV Login — Error",
-          user_error_report: "📣 TV Login — User report",
-        };
-        const get = (key: string) => {
-          const v = fields[key];
-          if (v === undefined || v === null || v === "") return "";
-          return redactTgValue(v);
-        };
-        const row = (key: string, label = humanTgKey(key)) => {
-          const v = get(key);
-          return v ? `${escapeTgHtml(label)}: <code>${escapeTgHtml(v)}</code>` : "";
-        };
-        const section = (label: string, rows: string[]) => {
-          const body = rows.filter(Boolean).join("\n");
-          return body ? `<b>${escapeTgHtml(label)}</b>\n${body}` : "";
-        };
-        const rawMessage = get("message") || get("event_message") || get("ui_message");
-        const { main: mainMessage, timing } = splitTiming(rawMessage);
-        const timingRows = timing
-          ? timing.replace(/^timing\s*/i, "").split(/\s+/).filter(Boolean).map((part) => `<code>${escapeTgHtml(part)}</code>`)
-          : [];
-        const parts = [
-          `<b>${escapeTgHtml(titleMap[kind] || `TV Login — ${kind}`)}</b>`,
-          section("📊 Result", [row("status"), row("result"), row("dispatch"), row("code_last4", "Code last 4")]),
-          section("👤 User", [row("user"), row("display_name", "Display name"), row("user_id", "User ID"), row("ip", "IP")]),
-          section("🎬 Account", [row("account_label", "Label"), row("imap_user", "Account"), row("login_email", "Login"), row("cookies_available", "Cookies")]),
-          mainMessage ? section("💬 Message", [`<code>${escapeTgHtml(redactTgValue(mainMessage))}</code>`]) : "",
-          timingRows.length ? section("⏱ Timing", timingRows) : "",
-          section("🖥 Runtime", [row("run_url", "Runner"), row("started_at", "Started"), row("finished_at", "Finished"), row("submitted_at", "Submitted")]),
-          get("user_note") ? section("📝 User note", [`<code>${escapeTgHtml(get("user_note"))}</code>`]) : "",
-        ].filter(Boolean);
-        const text = parts.join("\n\n");
-        postTelegramBg(tg, { text: text.slice(0, 3900) });
-      } catch (e) {
-        console.warn("[tv_tg] send failed:", (e as Error).message);
-      }
-    };
-
-    const USER_INVALID_TV_RESULTS = new Set(["runner_timeout", "netflix_timeout"]);
-    const sanitizeTvEventForUser = (ev: any) => {
-      if (!ev || !USER_INVALID_TV_RESULTS.has(String(ev.result || ""))) return ev;
-      return {
-        ...ev,
-        status: "invalid_code",
-        message: "Code rejected. Open Netflix on your TV, generate a fresh code, and try again.",
-      };
-    };
-
-    const dispatchGithubTvRunner = async (eventId: string, reason: string, userLabel?: string) => {
-      const cfg = await loadGithubConfig();
-      const repo = cfg.repo;
-      const pat = cfg.pat;
-      if (!repo || !pat || !eventId) return { ok: false, diag: "github_not_configured", message: "GitHub Actions runner is not configured." };
-      const cleanLabel = String(userLabel || "").replace(/[^\w.\-@ ]+/g, "").trim().slice(0, 60) || "user";
-      const ghRes = await dispatchGithubWorkflow(pat, repo, { event_id: eventId, user_label: cleanLabel, fallback_reason: String(reason || "") });
-      if (ghRes.status === 204) {
-        return { ok: true, diag: "github_queued", message: "GitHub Actions runner queued." };
-      }
-      const body = await ghRes.text().catch(() => "");
-      return { ok: false, diag: `github_${ghRes.status}`, message: githubPermissionMessage(ghRes.status, body, "run") };
-    };
-
-
-    if (action === "admin_cookies_list") {
-      await requireAdmin(req);
-      const { data, error } = await supabase
-        .from("imap_cookies")
-        .select("id, imap_user, label, filename, format, count, updated_at")
-        .order("updated_at", { ascending: false });
-      if (error) throw new Error(error.message);
-      const items = (data || []).map((row: any) => ({ ...row, count: Math.max(Number(row.count) || 0, 0) }));
-      return new Response(JSON.stringify({ success: true, items }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    if (action === "admin_cookies_get") {
-      await requireAdmin(req);
-      const p = (params || {}) as any;
-      const imapUser = String(p?.imap_user || "").trim().toLowerCase();
-      if (!imapUser) throw new Error("imap_user required");
-      const { data, error } = await supabase
-        .from("imap_cookies")
-        .select("imap_user, label, filename, format, count, content, updated_at")
-        .eq("imap_user", imapUser)
-        .maybeSingle();
-      if (error) throw new Error(error.message);
-      if (data) data.count = Math.max(Number(data.count) || 0, parseStoredCookieCount(data.content));
-      return new Response(JSON.stringify({ success: true, item: data || null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    if (action === "admin_cookies_save") {
-      const session = await requireAdmin(req);
-      const p = (params || {}) as any;
-      const imapUser = String(p?.imap_user || "").trim().toLowerCase();
-      const content = String(p?.content || "");
-      const filename = String(p?.filename || "cookies.txt").slice(0, 200);
-      const format = String(p?.format || "text").slice(0, 20);
-      const label = p?.label ? String(p.label).slice(0, 200) : null;
-      const count = Math.max(0, Math.min(100000, Math.max(Number(p?.count) || 0, parseStoredCookieCount(content))));
-      if (!imapUser) throw new Error("imap_user required");
-      if (!content) throw new Error("content required");
-      if (content.length > 2 * 1024 * 1024) throw new Error("content too large (max 2 MB)");
-      const { error } = await supabase
-        .from("imap_cookies")
-        .upsert({ imap_user: imapUser, label, filename, format, count, content, updated_at: new Date().toISOString() }, { onConflict: "imap_user" });
-      if (error) throw new Error(error.message);
-      await auditLog(supabase, "imap_cookies_saved", session.userId, null, { imap_user: imapUser, filename, format, count }, ip);
-      return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    if (action === "admin_cookies_delete") {
-      const session = await requireAdmin(req);
-      const p = (params || {}) as any;
-      const imapUser = String(p?.imap_user || "").trim().toLowerCase();
-      if (!imapUser) throw new Error("imap_user required");
-      const { error } = await supabase.from("imap_cookies").delete().eq("imap_user", imapUser);
-      if (error) throw new Error(error.message);
-      await auditLog(supabase, "imap_cookies_deleted", session.userId, null, { imap_user: imapUser }, ip);
-      return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    if (action === "link_list_accounts" || action === "link_generate" || action === "link_list") {
-      const session = await requireSession(req);
-      const { data: user } = await supabase
-        .from("app_users")
-        .select("id, username, name, assigned_accounts, feature_link, role")
-        .eq("id", session.userId)
-        .maybeSingle();
-      if (!user) throw new Error("User not found");
-      if (user.role !== "admin" && user.feature_link !== true) {
-        throw new Error("Direct Link isn't enabled for your account.");
-      }
-
-      // --- Shared: resolve candidate accounts w/ cookies ---
-      const [, emailAccounts] = await Promise.all([
-        getSetting<any>(supabase, "config"),
-        getSetting<any[]>(supabase, "email_accounts"),
-      ]);
-      const allAccounts: any[] = Array.isArray(emailAccounts) ? emailAccounts : [];
-      const candidates = resolveTvAccountCandidates(allAccounts, user.assigned_accounts);
-      const lookupKeys = Array.from(new Set(candidates.map((c) => c.login_email))).filter(Boolean);
-      const cookieMap = new Map<string, string>();
-      if (lookupKeys.length > 0) {
-        const { data: cookieRows } = await supabase.from("imap_cookies").select("imap_user, content, count").in("imap_user", lookupKeys);
-        for (const row of cookieRows || []) {
-          const has = Number((row as any).count) > 0 || (!!(row as any).content && String((row as any).content).length > 0);
-          if (has) cookieMap.set(String((row as any).imap_user).toLowerCase(), String((row as any).content || ""));
-        }
-      }
-      const eligible = candidates.filter((c) => cookieMap.has(c.login_email));
-
-      if (action === "link_list_accounts") {
-        return new Response(JSON.stringify({
-          success: true,
-          accounts: eligible.map((c) => ({
-            account_key: c.account_key,
-            login_email: c.login_email,
-            login_email_masked: maskTvEmail(c.login_email),
-            label: c.label,
-          })),
-          not_configured: eligible.length === 0,
-          message: eligible.length === 0 ? "Admin hasn't set up Direct Link for your Netflix account yet." : undefined,
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      if (action === "link_list") {
-        const { data: rows } = await supabase
-          .from("nftoken_links")
-          .select("id, account_key, login_email, link_url, expires_at, created_at, revoked_at, status")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(20);
-        return new Response(JSON.stringify({
-          success: true,
-          links: (rows || []).map((r: any) => ({
-            ...r,
-            login_email_masked: maskTvEmail(r.login_email || ""),
-          })),
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      // link_generate
-      const accountKey = String((params || {}).account_key || "").trim();
-      const match = eligible.find((c) => c.account_key === accountKey) || eligible[0];
-      if (!match) throw new Error("No configured Netflix account is available for a Direct Link.");
-
-      // Enforce: user must wait until current active link expires before generating another.
-      const { data: activeRows } = await supabase
-        .from("nftoken_links")
-        .select("id, expires_at")
-        .eq("user_id", user.id)
-        .eq("status", "active")
-        .is("revoked_at", null)
-        .gt("expires_at", new Date().toISOString())
-        .order("expires_at", { ascending: false })
-        .limit(1);
-      if (activeRows && activeRows.length > 0) {
-        const exp = new Date(activeRows[0].expires_at).getTime();
-        const secs = Math.max(0, Math.ceil((exp - Date.now()) / 1000));
-        throw new Error(`Aapka current link abhi active hai. ${secs}s baad naya link generate kar sakte ho.`);
-      }
-
-      const cookieContent = cookieMap.get(match.login_email) || "";
-      if (!cookieContent) throw new Error("Cookies missing for the selected account.");
-
-      // Extract NetflixId from the same saved cookie formats accepted by the uploaded Python generator.
-      const netflixId = extractNetflixIdFromStoredCookies(cookieContent);
-      if (!netflixId) throw new Error("Stored cookies don't include a NetflixId session.");
-
-      // Mint nftoken via the same Netflix iOS Argo API request as the uploaded Python script.
-      let nftoken = "";
-      let netflixExpires: number | null = null;
-      try {
-        const url = new URL("https://ios.prod.ftl.netflix.com/iosui/user/15.48");
-        for (const [key, value] of Object.entries(NETFLIX_DIRECT_LINK_QUERY)) url.searchParams.set(key, value);
-        const nfRes = await fetch(url, {
-          method: "GET",
-          headers: {
-            ...NETFLIX_DIRECT_LINK_HEADERS,
-            "Cookie": `NetflixId=${netflixId}`,
-          },
-          signal: AbortSignal.timeout(12_000),
-        });
-        if (!nfRes.ok) throw new Error(`Netflix token endpoint returned ${nfRes.status}`);
-        const body = await nfRes.json().catch(() => ({}));
-        const tokenData = body?.value?.account?.token?.default || body?.account?.token?.default || {};
-        nftoken = String(tokenData?.token || "");
-        // Match Python exactly: if len(str(expires)) == 13 -> ms; else assume seconds.
-        const rawExpiresVal = tokenData?.expires;
-        const rawExpires = Number(rawExpiresVal);
-        if (Number.isFinite(rawExpires) && rawExpires > 0) {
-          const asStr = String(Math.trunc(rawExpires));
-          netflixExpires = asStr.length === 13 ? Math.floor(rawExpires / 1000) : Math.floor(rawExpires);
-        }
-        console.log("[link_generate] netflix raw expires=", rawExpiresVal, "resolved seconds=", netflixExpires);
-      } catch (e) {
-        console.error("nftoken mint failed", e);
-      }
-      if (!nftoken) throw new Error("Netflix rejected the stored session. Cookies may be expired.");
-
-      const expiresAt = netflixExpires ? new Date(netflixExpires * 1000).toISOString() : new Date(Date.now() + 60 * 60_000).toISOString();
-      const linkUrl = `https://netflix.com/?nftoken=${nftoken}`;
-      const { data: inserted, error: insErr } = await supabase.from("nftoken_links").insert({
-        user_id: user.id,
-        account_key: match.account_key,
-        login_email: match.login_email,
-        link: linkUrl,
-        link_url: linkUrl,
-        expires_at: expiresAt,
-        status: "active",
-        source_ip: ip,
-        meta: { netflix_expires: netflixExpires, generator: "uploaded_python_exact" },
-      }).select("id, created_at, expires_at").maybeSingle();
-      if (insErr) throw insErr;
-
-      // Admin Telegram notification (fire-and-forget)
-      try {
-        const botToken = Deno.env.get("TELEGRAM_BOT_TOKEN");
-        const chatId = Deno.env.get("TELEGRAM_CHAT_ID");
-        if (botToken && chatId) {
-          const istFmt = new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" });
-          const text = [
-            "🔗 <b>Direct Link generated</b>",
-            `User: <b>${user.name || user.username}</b> (${user.username})`,
-            `Account: <code>${match.login_email}</code>`,
-            `Expires (IST): <b>${istFmt.format(new Date(expiresAt))}</b>`,
-          ].join("\n");
-          fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true }),
-          }).catch(() => {});
-        }
-      } catch {}
-
-      return new Response(JSON.stringify({
-        success: true,
-        link: {
-          id: inserted?.id,
-          link_url: linkUrl,
-          expires_at: expiresAt,
-          login_email_masked: maskTvEmail(match.login_email),
-          account_key: match.account_key,
-        },
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    if (action === "tv_list_accounts") {
-      const session = await requireSession(req);
-      const { data: user } = await supabase
-        .from("app_users")
-        .select("id, assigned_accounts, feature_tv, role")
-        .eq("id", session.userId)
-        .maybeSingle();
-      if (!user) throw new Error("User not found");
-      if (user.role !== "admin" && user.feature_tv === false) {
-        return new Response(JSON.stringify({ success: true, accounts: [], not_configured: true, message: "TV login isn't enabled for your account." }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-      const [, emailAccounts] = await Promise.all([
-        getSetting<any>(supabase, "config"),
-        getSetting<any[]>(supabase, "email_accounts"),
-      ]);
-      const allAccounts: any[] = Array.isArray(emailAccounts) ? emailAccounts : [];
-      const candidates = resolveTvAccountCandidates(allAccounts, user.assigned_accounts);
-
-      // Cookies are keyed per recipient filter (login_email). An account is
-      // only surfaced to the user if the admin has explicitly configured
-      // cookies for THAT specific filter — never inherited from a sibling.
-      const lookupKeys = Array.from(new Set(candidates.map((c) => c.login_email))).filter(Boolean);
-      const cookieSet = new Set<string>();
-      if (lookupKeys.length > 0) {
-        const { data: cookieRows } = await supabase
-          .from("imap_cookies")
-          .select("imap_user, count, content")
-          .in("imap_user", lookupKeys);
-        for (const row of cookieRows || []) {
-          const has = Number((row as any).count) > 0 || (!!(row as any).content && String((row as any).content).length > 0);
-          if (has) cookieSet.add(String((row as any).imap_user).toLowerCase());
-        }
-      }
-
-      const accounts = candidates
-        .filter((c) => cookieSet.has(c.login_email))
-        .map((c) => ({
-          account_key: c.account_key,
-          // Bind the frontend selection to the FILTER identity (login_email),
-          // not the parent IMAP user. The runner will fetch cookies by this
-          // key, so a filter without its own cookies can never fall back to
-          // the primary account's cookies.
-          imap_user: c.login_email,
-          login_email: c.login_email,
-          imap_user_masked: maskTvEmail(c.login_email),
-          login_email_masked: maskTvEmail(c.login_email),
-          actual_imap_user_masked: maskTvEmail(c.imap_user),
-          label: c.label,
-          cookies_available: true,
-        }));
-      const notConfigured = accounts.length === 0;
-      return new Response(JSON.stringify({
-        success: true,
-        accounts,
-        not_configured: notConfigured,
-        message: notConfigured ? "Admin hasn't set up TV login for your Netflix account yet. Please check back soon." : undefined,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-
-    if (action === "tv_submit_code") {
-      const session = await requireSession(req);
-      const p = (params || {}) as any;
-      const code = String(p?.code || "").replace(/\D/g, "").slice(0, 8);
-      if (code.length !== 8) throw new Error("Enter the 8-digit code shown on your TV");
-
-      // GitHub Actions can cold-start slowly. Do not mark queued TV jobs stale
-      // before the workflow has had time to boot and fetch the event, otherwise
-      // the runner reaches `tv_login_fetch_job` and receives "Event is not runnable".
-      const staleCutoffIso = new Date(Date.now() - 10 * 60_000).toISOString();
-      await supabase
-        .from("tv_login_events")
-        .update({
-          status: "error",
-          result: "runner_timeout",
-          message: "Fast TV runner did not report back. Please try again after the runner is online.",
-          finished_at: new Date().toISOString(),
-        })
-        .in("status", ["queued", "running", "in_progress"])
-        .lt("created_at", staleCutoffIso);
-
-      const { data: user } = await supabase
-        .from("app_users")
-        .select("id, username, name, assigned_accounts, feature_tv, role")
-        .eq("id", session.userId)
-        .maybeSingle();
-      if (user && user.role !== "admin" && user.feature_tv === false) {
-        throw new Error("TV login isn't enabled for your account.");
-      }
-      if (!user) throw new Error("User not found");
-
-      // Resolve the user's linked IMAP accounts strictly from admin-configured
-      // email_accounts. No implicit "Primary" fallback — users see only what
-      // the admin explicitly assigned to them.
-      const [, emailAccounts] = await Promise.all([
-        getSetting<any>(supabase, "config"),
-        getSetting<any[]>(supabase, "email_accounts"),
-      ]);
-      const allAccounts: any[] = Array.isArray(emailAccounts) ? emailAccounts : [];
-      const assignedLabels = (Array.isArray(user.assigned_accounts) ? user.assigned_accounts : [])
-        .map((v: any) => String(v || "").trim().toLowerCase())
-        .filter(Boolean);
-      const candidates = resolveTvAccountCandidates(allAccounts, user.assigned_accounts);
-
-      let matched: { account_key: string; label: string; imap_user: string; login_email: string } | null = null;
-      let cookiesAvailable = false;
-      const chosenImap = String(p?.imap_user || "").trim().toLowerCase();
-      const chosenKey = String(p?.account_key || "").trim();
-      if (candidates.length > 0) {
-        const lookupKeys = Array.from(new Set(candidates.map((c) => c.login_email))).filter(Boolean);
-        const { data: cookieRows } = await supabase
-          .from("imap_cookies")
-          .select("imap_user, count, content, updated_at")
-          .in("imap_user", lookupKeys);
-        const cookieMap = new Map<string, any>();
-        for (const row of cookieRows || []) cookieMap.set(String(row.imap_user).toLowerCase(), row);
-
-        if (chosenKey || chosenImap) {
-          // Mandatory: chosen account must match the exact recipient-filter
-          // identity (`login_email`). Do NOT match by the parent IMAP user here:
-          // multiple filters can share the same inbox login, and matching the
-          // parent would let aliases inherit primary cookies.
-          const found = chosenKey
-            ? candidates.find((c) => c.account_key === chosenKey && (!chosenImap || c.login_email === chosenImap))
-            : candidates.find((c) => c.login_email === chosenImap);
-          if (!found) throw new Error("Selected account is not available for your profile");
-          matched = found;
-          const row = cookieMap.get(found.login_email);
-          cookiesAvailable = !!(row && (Number(row.count) > 0 || (row.content && String(row.content).length > 0)));
-        } else {
-          for (const c of candidates) {
-            const row = cookieMap.get(c.login_email);
-            if (row && (Number(row.count) > 0 || (row.content && String(row.content).length > 0))) {
-              matched = c;
-              cookiesAvailable = true;
-              break;
-            }
-          }
-          if (!matched) matched = candidates[0];
-        }
-      }
-
-      const ua = req.headers.get("user-agent") || "";
-      const metadata = {
-        submittedAt: new Date().toISOString(),
-        assignedLabels,
-        candidateCount: candidates.length,
-        matchedLabel: matched?.label || null,
-        matchedLoginEmail: matched?.login_email || null,
-        parentImapUser: matched?.imap_user || null,
-        source: "viewer_tv_button",
-      };
-      const status = cookiesAvailable ? "in_progress" : "no_cookies";
-
-      const { data: inserted, error: insErr } = await supabase
-        .from("tv_login_events")
-        .insert({
-          user_id: user.id,
-          username: user.username,
-          // Bind the event to the FILTER's login_email (the cookie key), not
-          // the parent IMAP user. This guarantees the runner will only ever
-          // load cookies configured for THIS specific filter — never the
-          // primary account's cookies.
-          imap_user: matched?.login_email || null,
-          account_label: matched?.label || null,
-          code,
-          status,
-          cookies_available: cookiesAvailable,
-          ip,
-          user_agent: ua,
-          metadata,
-        })
-        .select("id, created_at")
-        .single();
-      if (insErr) throw new Error(insErr.message);
-
-      await auditLog(supabase, "tv_code_submitted", user.id, user.id, { code_last4: code.slice(-4), imap_user: matched?.login_email || null, parent_imap: matched?.imap_user || null, cookies_available: cookiesAvailable }, ip);
-
-
-      // Exactly one runner is used: VPS mode OR GitHub Actions mode.
-      let dispatched = false;
-      let dispatchDiag = "skipped";
-      let responseMessage: string | null = null;
-      console.log(`[tv_submit] event=${inserted?.id} cookiesAvailable=${cookiesAvailable} matched_login=${matched?.login_email || "-"} parent_imap=${matched?.imap_user || "-"}`);
-      if (cookiesAvailable && inserted?.id && matched?.login_email) {
-        const { data: vpsRowForRunner } = await readSettingRow(supabase, "vps_config");
-        const vpsCfgForRunner = publicVpsConfig(vpsRowForRunner?.value);
-        const runnerMode: "vps" | "github" = (vpsCfgForRunner as any).mode === "github" ? "github" : "vps";
-        const runnerBase = effectiveTvRunnerUrl(vpsRowForRunner?.value);
-        const baseLabel = String(user?.name || user?.username || "user");
-        const userLabel = matched?.label ? `${baseLabel} · ${matched.label}` : baseLabel;
-        const tryGithubOnly = async (reason: string) => runnerMode === "github"
-          ? await dispatchGithubTvRunner(inserted!.id, reason, userLabel).catch((err) => ({ ok: false, diag: "github_exception", message: err instanceof Error ? err.message : String(err) }))
-          : { ok: false, diag: "vps_only_mode", message: "VPS mode is selected, so GitHub Actions will not run." };
-        try {
-          console.log(`[tv_submit] runner mode=${runnerMode} url_present=${!!runnerBase}`);
-
-          // Mode: github → skip VPS entirely, dispatch GitHub Actions.
-          if (runnerMode === "github") {
-            const backup = await tryGithubOnly("mode_github");
-            if (backup.ok) {
-              dispatched = true;
-              dispatchDiag = backup.diag;
-              responseMessage = "GitHub runner started. Keep your TV on the code screen while it finishes.";
-              await supabase.from("tv_login_events").update({
-                status: "queued",
-                result: null,
-                message: responseMessage,
-                metadata: { ...metadata, runnerMode: "github", githubQueuedAt: new Date().toISOString() },
-              }).eq("id", inserted.id);
-            } else {
-              responseMessage = `GitHub Actions failed: ${backup.message}`;
-              await supabase.from("tv_login_events").update({ status: "error", result: "fast_runner_unavailable", message: responseMessage, finished_at: new Date().toISOString() }).eq("id", inserted.id);
-            }
-          } else if (runnerBase) {
-            const runnerToken = randomHex(32);
-            const runnerTokenHash = await sha256Hex(runnerToken);
-            await supabase
-              .from("tv_login_events")
-              .update({ metadata: { ...metadata, runnerMode: "direct", runnerTokenHash } })
-              .eq("id", inserted.id);
-            const runnerRes = await fetch(`${runnerBase}/run`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ event_id: inserted.id, runner_token: runnerToken }),
-              signal: AbortSignal.timeout(TV_RUNNER_DISPATCH_TIMEOUT_MS),
-            });
-            const txt = await runnerRes.text().catch(() => "");
-            let runnerJson: any = null;
-            try { runnerJson = txt ? JSON.parse(txt) : null; } catch {}
-            console.log(`[tv_submit] direct runner response status=${runnerRes.status} body="${txt.slice(0, 220)}"`);
-            dispatched = runnerRes.ok && runnerJson?.success !== false;
-            if (!dispatched) {
-              dispatchDiag = `fast_runner_${runnerRes.status}`;
-              const runnerReason = runnerJson?.message || runnerJson?.error || txt.slice(0, 160);
-              responseMessage = runnerRes.status === 409
-                ? "Another TV sign-in is already running on this VPS. Try again in a few seconds."
-                : runnerReason || `Fast runner rejected the job (${runnerRes.status})`;
-              await supabase.from("tv_login_events").update({ status: "error", result: "fast_runner_unavailable", message: responseMessage, finished_at: new Date().toISOString() }).eq("id", inserted.id);
-            } else {
-              dispatchDiag = "fast_runner_running";
-              responseMessage = "Fast TV runner started. Keep your TV on the code screen.";
-              await supabase.from("tv_login_events").update({ status: "running", message: responseMessage }).eq("id", inserted.id);
-            }
-          } else {
-            dispatchDiag = "no_config";
-            const msg = "Fast TV runner URL is not configured.";
-            console.log(`[tv_submit] ${msg}`);
-            responseMessage = msg;
-            await supabase.from("tv_login_events").update({ status: "error", result: "fast_runner_unavailable", message: responseMessage, finished_at: new Date().toISOString() }).eq("id", inserted.id);
-          }
-        } catch (e) {
-          dispatchDiag = "exception";
-          const em = e instanceof Error ? e.message : String(e);
-          console.log(`[tv_submit] direct runner exception: ${em}`);
-          responseMessage = /aborted|timeout/i.test(em)
-            ? "Fast TV runner did not accept the job quickly enough. Try again in a few seconds."
-            : `Fast runner error: ${em}`;
-          await supabase.from("tv_login_events").update({ status: "error", result: "fast_runner_unavailable", message: responseMessage, finished_at: new Date().toISOString() }).eq("id", inserted.id);
-        }
-      }
-
-      // Full-context Telegram alert for every TV login attempt.
-      void sendTvLoginTelegram(cookiesAvailable ? "attempt" : (matched ? "no_cookies" : "not_configured"), {
-        event_id: inserted?.id,
-        user: user.username,
-        user_id: user.id,
-        display_name: user.name,
-        account_label: matched?.label,
-        imap_user: matched?.imap_user,
-        login_email: matched?.login_email,
-        code_last4: code.slice(-4),
-        cookies_available: cookiesAvailable ? "yes" : "no",
-        dispatch: dispatchDiag,
-        ip,
-        user_agent: ua.slice(0, 160),
-        submitted_at: metadata.submittedAt,
-      });
-
-      return new Response(JSON.stringify({
-        success: true,
-        event_id: inserted?.id,
-        created_at: inserted?.created_at,
-        cookies_available: cookiesAvailable,
-        account_label: matched?.label || null,
-        imap_user_masked: matched?.login_email ? maskTvEmail(matched.login_email) : null,
-        status: cookiesAvailable ? (dispatchDiag.startsWith("github") ? "queued" : dispatched ? "running" : "error") : "no_cookies",
-        message: responseMessage,
-        dispatch_diag: dispatchDiag,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    // ── TV auto-login: client polling ──────────────────────────────
-    if (action === "tv_login_status") {
-      const session = await requireSession(req);
-      const p = (params || {}) as any;
-      const eventId = String(p?.event_id || "").trim();
-      if (!eventId) throw new Error("event_id required");
-      const { data: ev, error: evErr } = await supabase
-        .from("tv_login_events")
-        .select("id, status, result, message, account_label, imap_user, screenshot_url, github_run_url, created_at, finished_at, user_id, metadata")
-        .eq("id", eventId)
-        .maybeSingle();
-      if (evErr) throw new Error(evErr.message);
-      if (!ev) throw new Error("Event not found");
-      if (String(ev.user_id) !== String(session.userId)) throw new Error("Forbidden");
-      const evStatus = String(ev.status || "");
-      const evCreated = Date.parse(String(ev.created_at || ""));
-      const isStaleActive = ["queued", "running", "in_progress", "verifying", "checking"].includes(evStatus)
-        && Number.isFinite(evCreated)
-        && Date.now() - evCreated > 10 * 60_000;
-      if (isStaleActive) {
-        const expired = {
-          ...ev,
-          status: "error",
-          result: "runner_timeout",
-          message: evStatus === "queued"
-            ? "TV sign-in took too long to start. Please try a fresh TV code."
-            : "TV sign-in took too long to finish. Please try a fresh TV code.",
-          finished_at: new Date().toISOString(),
-          metadata: { ...((ev.metadata as any) || {}), autoExpiredAt: new Date().toISOString(), autoExpireReason: "status_poll_stale" },
-        };
-        await supabase
-          .from("tv_login_events")
-          .update({ status: expired.status, result: expired.result, message: expired.message, finished_at: expired.finished_at, metadata: expired.metadata })
-          .eq("id", eventId);
-        return new Response(JSON.stringify({ success: true, event: sanitizeTvEventForUser(expired) }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-      const outEv = sanitizeTvEventForUser(ev);
-      return new Response(JSON.stringify({ success: true, event: outEv }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    // Returns the caller's most recent non-terminal TV login event (if any).
-    // Lets the UI resume in-flight sign-ins after workflow switches / reloads
-    // instead of losing state that only lived in React memory.
-    if (action === "tv_login_active") {
-      const session = await requireSession(req);
-      const cutoffIso = new Date(Date.now() - 30 * 60_000).toISOString();
-      const { data: ev } = await supabase
-        .from("tv_login_events")
-        .select("id, status, result, message, account_label, imap_user, code, github_run_url, created_at, finished_at, cookies_available")
-        .eq("user_id", session.userId)
-        .in("status", ["queued", "running", "in_progress", "verifying", "checking"])
-        .gte("created_at", cutoffIso)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      return new Response(JSON.stringify({ success: true, event: ev || null }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    // Latest TV login attempts for the signed-in user. The UI uses this as the
-    // durable per-profile process history, so workflow switches/reloads never
-    // erase success/error details.
-    if (action === "tv_login_recent") {
-      const session = await requireSession(req);
-      const { data, error } = await supabase
-        .from("tv_login_events")
-        .select("id, status, result, message, account_label, imap_user, github_run_url, created_at, finished_at, cookies_available")
-        .eq("user_id", session.userId)
-        .order("created_at", { ascending: false })
-        .limit(8);
-      if (error) throw new Error(error.message);
-      return new Response(JSON.stringify({ success: true, events: (data || []).map(sanitizeTvEventForUser) }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-
-
-    // ── TV auto-login: runner fetches job (HMAC-signed, plaintext) ──
-    if (action === "tv_login_fetch_job" || action === "tv_login_report") {
-      const p = (params || {}) as any;
-      const eventId = String(p?.event_id || "").trim();
-      const ts = Number(p?.ts || 0);
-      const sig = String(p?.sig || "").toLowerCase();
-      const runnerToken = String(p?.runner_token || "").trim();
-      const key = (await loadGithubConfig()).hmacKey;
-      if (!eventId) throw new Error("event_id required");
-
-      let authed = false;
-      if (runnerToken) {
-        const { data: tokenEvent } = await supabase
-          .from("tv_login_events")
-          .select("metadata")
-          .eq("id", eventId)
-          .maybeSingle();
-        const expectedHash = String((tokenEvent?.metadata as any)?.runnerTokenHash || "");
-        authed = !!expectedHash && await sha256Hex(runnerToken) === expectedHash;
-      }
-      if (!authed) {
-        if (!key) throw new Error("Runner HMAC key not configured");
-        if (!ts || Math.abs(Date.now() - ts) > 5 * 60 * 1000) throw new Error("Stale or missing timestamp");
-        // HMAC over `${action}|${event_id}|${ts}` for fetch; for report include status+result
-        const payloadStr = action === "tv_login_fetch_job"
-          ? `${action}|${eventId}|${ts}`
-          : `${action}|${eventId}|${ts}|${String(p?.status || "")}|${String(p?.result || "")}`;
-        const cryptoKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-        const sigBuf = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(payloadStr));
-        const expected = Array.from(new Uint8Array(sigBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-        if (expected !== sig) throw new Error("Bad signature");
-      }
-
-      if (action === "tv_login_fetch_job") {
-        const { data: ev, error: evErr } = await supabase
-          .from("tv_login_events")
-          .select("id, code, imap_user, status, user_id, metadata")
-          .eq("id", eventId)
-          .maybeSingle();
-        if (evErr) throw new Error(evErr.message);
-        if (!ev) throw new Error("Event not found");
-        if (!ev.imap_user) throw new Error("No account bound to event");
-        if (!new Set(["queued", "running", "in_progress"]).has(String(ev.status || ""))) throw new Error("Event is not runnable");
-        console.log(`[tv_runner] fetch_job event=${eventId} status=${ev.status || "-"} imap=${ev.imap_user}`);
-        const { data: cookieRow } = await supabase
-          .from("imap_cookies")
-          .select("content, format")
-          .eq("imap_user", ev.imap_user)
-          .maybeSingle();
-        if (!cookieRow?.content) throw new Error("No cookies stored for account");
-        // Mark as running
-        await supabase.from("tv_login_events").update({
-          status: "running",
-          github_run_url: String(p?.run_url || "") || null,
-          metadata: { ...((ev.metadata as any) || {}), runnerStartedAt: new Date().toISOString() },
-        }).eq("id", eventId);
-        return new Response(JSON.stringify({
-          success: true,
-          event_id: ev.id,
-          code: ev.code,
-          cookies_content: cookieRow.content,
-          cookies_format: cookieRow.format || "auto",
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      // tv_login_report
-      const status = String(p?.status || "").slice(0, 40) || "unknown";
-      const result = String(p?.result || "").slice(0, 40) || null;
-      const message = String(p?.message || "").slice(0, 500) || null;
-      const screenshotUrl = String(p?.screenshot_url || "").slice(0, 500) || null;
-      const runUrl = String(p?.run_url || "").slice(0, 500) || null;
-      console.log(`[tv_runner] report event=${eventId} status=${status} result=${result || "-"} run=${runUrl || "-"}`);
-      const { data: preEv } = await supabase
-        .from("tv_login_events")
-        .select("id, username, user_id, account_label, imap_user, code, created_at")
-        .eq("id", eventId)
-        .maybeSingle();
-      const { error: updErr } = await supabase
-        .from("tv_login_events")
-        .update({ status, result, message, screenshot_url: screenshotUrl, github_run_url: runUrl, finished_at: new Date().toISOString() })
-        .eq("id", eventId);
-      if (updErr) throw new Error(updErr.message);
-
-      // Detailed Telegram alert for every runner result. Cookies expired /
-      // errors are elevated so admin sees them immediately.
-      const kind = result === "cookies_expired" ? "cookies_expired"
-        : status === "success" ? "success"
-        : status === "invalid_code" ? "invalid_code"
-        : result === "runner_timeout" || result === "netflix_timeout" ? result
-        : "error";
-      void sendTvLoginTelegram(kind, {
-        event_id: eventId,
-        user: preEv?.username,
-        user_id: preEv?.user_id,
-        account_label: preEv?.account_label,
-        imap_user: preEv?.imap_user,
-        code_last4: typeof preEv?.code === "string" ? preEv.code.slice(-4) : undefined,
-        status,
-        result,
-        message,
-        run_url: runUrl,
-        started_at: preEv?.created_at,
-        finished_at: new Date().toISOString(),
-      });
-
-      return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-
     throw new Error("Unknown action: " + action);
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    try {
-      console.error("[manage-app] action_failed", {
-        action: typeof action === "string" ? action : "unknown",
-        message,
-      });
-    } catch (_) {
-      console.error("[manage-app] action_failed", message);
-    }
     return new Response(JSON.stringify({ success: false, error: message }), {
       status: 400,
       headers: { ...corsHeaders, "Content-Type": "application/json" },

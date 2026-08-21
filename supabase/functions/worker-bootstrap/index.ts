@@ -41,22 +41,10 @@ Deno.serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // Require pre-shared bootstrap secret (proof of project ownership).
-  // Without this, any valid Cloudflare API token could pull SESSION_SIGNING_SECRET.
-  const BOOTSTRAP_SECRET = (Deno.env.get("WORKER_BOOTSTRAP_SECRET") || "").trim();
-  const providedSecret = (req.headers.get("x-bootstrap-secret") || "").trim();
-  if (!BOOTSTRAP_SECRET) {
-    return json({ error: "Server not configured: WORKER_BOOTSTRAP_SECRET missing" }, 500);
-  }
-  if (!providedSecret || providedSecret !== BOOTSTRAP_SECRET) {
-    return json({ error: "Invalid or missing bootstrap secret" }, 403);
-  }
-
   const cfToken = (req.headers.get("x-cf-token") || "").trim();
   if (!cfToken) {
     return json({ error: "Missing X-CF-Token header" }, 401);
   }
-
 
 
 

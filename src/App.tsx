@@ -1,14 +1,11 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useRef, useMemo, Suspense, lazy } from "react";
 import { createPortal } from "react-dom";
-import { Mail, RefreshCw, ShieldCheck, Shield, Clock, AlertCircle, Copy, Check, ArrowLeft, Lock, Key, LogOut, Settings, Plus, Users, Trash2, CheckCircle2, X, Eye, EyeOff, KeyRound, Filter, Server, Globe, Edit, Info, UserCircle, Search, ChevronRight, Bell, Send, MessageSquare, Image as ImageIcon, ExternalLink, AlertTriangle, Sparkles, Megaphone, Wrench, CreditCard, Tag, ChevronDown, ChevronUp, HardDrive, Upload, Zap, BookOpen, GraduationCap, Film, PlayCircle, Pin, MapPin, MapPinOff, Tv, Loader2, Download, ClipboardPaste, Link as LinkIcon, Activity, HelpCircle } from "lucide-react";
+import { Mail, RefreshCw, ShieldCheck, Shield, Clock, AlertCircle, Copy, Check, ArrowLeft, Lock, Key, LogOut, Settings, Plus, Users, Trash2, CheckCircle2, X, Eye, EyeOff, KeyRound, Filter, Server, Globe, Edit, Info, UserCircle, Search, ChevronRight, Bell, Send, MessageSquare, Image as ImageIcon, ExternalLink, AlertTriangle, Sparkles, Megaphone, Wrench, CreditCard, Tag, ChevronDown, ChevronUp, HardDrive, Upload, Zap, BookOpen, GraduationCap, Film, PlayCircle, Pin, MapPin, MapPinOff, Tv, Loader2, Download } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from "react-router";
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import NetflixHouseholdVerificationGuide from "./pages/NetflixHouseholdVerificationGuide";
-import NetflixTvActivationGuide from "./pages/NetflixTvActivationGuide";
-import { useRouteHead } from "./lib/useRouteHead";
 import { notify } from "./components/toast/notify";
 import { ToastProvider } from "./components/toast/toast-provider";
-import { WorkflowChooser, ViewSwitcher, DirectLinkView, useWorkflowView, resolveFeatures, countEnabled, WorkflowSwitcher, prefetchWorkflowAccounts, readAccountsCache, writeAccountsCache, requestWorkflowView } from "./components/WorkflowViews";
 
 import { supabase } from "./integrations/supabase/client";
 import { AVATAR_CATEGORIES, resolveAvatar, buildAvatarId, prettyName, getAvatarCategoryUrls } from "./lib/avatars";
@@ -19,8 +16,6 @@ import { clearBrowserIdentityNow, sessionGet, sessionSet, sessionRemove, nukeBro
 import { openInboxDB, readLatestEmails, writeDelta, getSyncCursor, cacheEmailHtml, getEmailHtml, purgeEmailsOutsideScope, type CachedEmail } from "./lib/inboxCache";
 import { readAdminCache, writeAdminCache, isCacheFresh, reconcileVersion, emitSyncStatus } from "./lib/adminSettingsCache";
 import { AdminSyncStatus } from "./components/AdminSyncStatus";
-import { useAdminSlice } from "./hooks/useAdminSlice";
-import { AdminSliceKeys, setSlice as setAdminSlice, clearAllSlices as clearAllAdminSlices } from "./lib/adminData";
 
 
 // Lazy-loaded heavy auth-only libs — kept out of the public first-load chunk.
@@ -114,54 +109,6 @@ const resolvePlatformOption = (value: string | null | undefined) => {
   const id = PLATFORM_ALIAS_TO_ID[normalizePlatformKey(raw)];
   return PLATFORM_OPTIONS.find((platform) => platform.id === id) || PLATFORM_OPTIONS.find((platform) => platform.id === "")!;
 };
-
-function DurationQuickAdd({ baseDateStr, onApply }: { baseDateStr: string; onApply: (localStr: string) => void }) {
-  const [amount, setAmount] = useState<string>("");
-  const [unit, setUnit] = useState<"days" | "months" | "years">("months");
-  const apply = () => {
-    const n = parseInt(amount, 10);
-    if (!Number.isFinite(n) || n <= 0) return;
-    const base = baseDateStr ? new Date(baseDateStr) : new Date();
-    if (Number.isNaN(base.getTime())) return;
-    const d = new Date(base);
-    if (unit === "days") d.setDate(d.getDate() + n);
-    else if (unit === "months") d.setMonth(d.getMonth() + n);
-    else d.setFullYear(d.getFullYear() + n);
-    const pad = (v: number) => String(v).padStart(2, "0");
-    onApply(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
-    setAmount("");
-  };
-  return (
-    <div className="mt-2 flex items-stretch gap-1.5">
-      <input
-        type="number"
-        min={1}
-        inputMode="numeric"
-        value={amount}
-        onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))}
-        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); apply(); } }}
-        placeholder="e.g. 2"
-        aria-label="Duration amount"
-        className="w-20 px-2.5 py-1.5 rounded-lg border border-sky-200 bg-white text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400"
-      />
-      <select
-        value={unit}
-        onChange={(e) => setUnit(e.target.value as "days" | "months" | "years")}
-        aria-label="Duration unit"
-        className="px-2 py-1.5 rounded-lg border border-sky-200 bg-white text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-400"
-      >
-        <option value="days">days</option>
-        <option value="months">months</option>
-        <option value="years">years</option>
-      </select>
-      <button type="button" onClick={apply}
-        className="px-3 py-1.5 rounded-lg text-xs font-black bg-sky-600 text-white hover:bg-sky-700 active:scale-95 transition-all">
-        Add
-      </button>
-    </div>
-  );
-}
-
 
 const platformMatchesSearch = (platform: PlatformOption, search: string) => {
   const query = normalizePlatformKey(search);
@@ -302,63 +249,6 @@ const TemplateIcon: React.FC<{ id: string; className?: string }> = ({ id, classN
 const SESSION_CONFIG_KEY_FOR = (role: "admin" | "user") =>
   role === "admin" ? "admin_session_config" : "session_config";
 
-const SESSION_TIMEOUT_CACHE_KEY = (role: "admin" | "user") =>
-  role === "admin" ? "admin_session_timeout_min" : "user_session_timeout_min";
-
-const DEFAULT_SESSION_TIMEOUT_MINUTES: Record<"admin" | "user", number> = {
-  admin: 60,
-  user: 5,
-};
-
-function readSessionNumber(key: "session_started_at" | "session_expires_at"): number {
-  const value = Number(sessionGet(key as any) || "0");
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function ensureSessionStarted(): number {
-  const existing = readSessionNumber("session_started_at");
-  if (existing) return existing;
-  markSessionStart();
-  return readSessionNumber("session_started_at") || Date.now();
-}
-
-function readCachedTimeoutMinutes(role: "admin" | "user"): number {
-  try {
-    const raw = Number(sessionGet(SESSION_TIMEOUT_CACHE_KEY(role) as any) || "0");
-    return Number.isFinite(raw) && raw > 0 ? raw : 0;
-  } catch { return 0; }
-}
-
-function writeCachedTimeoutMinutes(role: "admin" | "user", minutes: number): void {
-  try {
-    if (Number.isFinite(minutes) && minutes > 0) {
-      sessionSet(SESSION_TIMEOUT_CACHE_KEY(role) as any, String(Math.floor(minutes)));
-    }
-  } catch {}
-}
-
-function getSessionDeadline(role: "admin" | "user", minutes?: number): number {
-  const started = readSessionNumber("session_started_at");
-  const accessExpiresAt = readSessionNumber("session_expires_at");
-  const explicit = Number.isFinite(Number(minutes)) && Number(minutes) > 0 ? Number(minutes) : 0;
-  // Prefer explicit (fresh from server) → cached configured → default. Using the
-  // default synchronously on remount would nuke long admin windows (e.g. 60min
-  // default vs 180min configured) as soon as elapsed exceeds 60min, before the
-  // async settings fetch had a chance to re-arm.
-  const configuredMinutes = explicit || readCachedTimeoutMinutes(role) || DEFAULT_SESSION_TIMEOUT_MINUTES[role];
-  const configuredDeadline = started && configuredMinutes > 0 ? started + configuredMinutes * 60_000 : 0;
-  return configuredDeadline || accessExpiresAt || 0;
-}
-
-function getSessionTotalMinutes(role: "admin" | "user", minutes?: number): number {
-  const started = readSessionNumber("session_started_at");
-  const deadline = getSessionDeadline(role, minutes);
-  if (started && deadline > started) return Math.max(1, Math.ceil((deadline - started) / 60_000));
-  const explicit = Number.isFinite(Number(minutes)) && Number(minutes) > 0 ? Number(minutes) : 0;
-  return explicit || readCachedTimeoutMinutes(role) || DEFAULT_SESSION_TIMEOUT_MINUTES[role];
-}
-
-
 // --- Worker URL Types & Helpers ---
 type WorkerUrlMap = {
   primary: string[];
@@ -395,34 +285,6 @@ function getSessionToken(): string | null {
   try {
     return sessionGet("session_token" as any);
   } catch { return null; }
-}
-
-function readStoredSessionUser(): any | null {
-  try {
-    const raw = sessionGet("user" as any);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
-
-function clearRouteSessionState(): void {
-  const keys = [
-    "session_token",
-    "refresh_token",
-    "session_expires_at",
-    "refresh_expires_at",
-    "session_family_id",
-    "session_started_at",
-    "user",
-    "admin_auth",
-    "cloudflare_worker_urls",
-    "admin_session_timeout_min",
-    "user_session_timeout_min",
-  ];
-
-  keys.forEach((key) => {
-    try { sessionRemove(key as any); } catch {}
-  });
-  import("./lib/sessionRefresh").then(({ clearRefreshState }) => clearRefreshState()).catch(() => {});
 }
 
 type DeviceFingerprint = {
@@ -724,8 +586,6 @@ function beginDeviceFingerprintCapture(): Promise<DeviceFingerprint> {
 
 
 const LOGIN_GEO_TIMEOUT_MS = 45_000;
-const LOGIN_HANDSHAKE_TIMEOUT_MS = 15_000;
-const LOGIN_EDGE_TIMEOUT_MS = 45_000;
 const GPS_PERMISSION_TOAST_ID = "gps-permission-blocked";
 const GPS_PERMISSION_REQUIRED_MESSAGE = "Allow location to sign in.";
 const GPS_PERMISSION_BLOCKED_MESSAGE = "Location blocked. Enable it in browser site settings.";
@@ -734,7 +594,7 @@ type GpsPermissionMode = "needed" | "blocked";
 
 function isGpsPermissionDeniedMessage(message: string) {
   const m = message.toLowerCase();
-  return m.includes("gps permission") || m.includes("gps coordinates missing") || m.includes("gps timed out") || m.includes("device gps unavailable") || m.includes("location permission") || m.includes("allow location") || m.includes("location blocked") || m.includes("browser location popup") || m.includes("does not support gps");
+  return m.includes("gps permission") || m.includes("location permission") || m.includes("allow location") || m.includes("location blocked") || m.includes("browser location popup");
 }
 
 function getGpsPermissionMode(message: string): GpsPermissionMode {
@@ -931,13 +791,6 @@ function GpsPermissionSheet({ mode, loading, onEnable, onPrimeEnable }: { mode: 
 
 // --- API Helper (encrypted-only Supabase edge transport) ---
 
-// In-flight coalescer: overlapping calls for read-only idempotent actions
-// (e.g. `me` fired by hydration + plan-expiry + route boundary within the
-// same tick) share a single Promise instead of triggering N edge invocations.
-// Keyed by function+action+token so different sessions never share a result.
-const inflightReads = new Map<string, Promise<any>>();
-const COALESCE_ACTIONS = new Set(["me", "bootstrap_public"]);
-
 async function apiCall(functionName: string, body: any) {
 
   const token = getSessionToken();
@@ -946,14 +799,6 @@ async function apiCall(functionName: string, body: any) {
   const extraHeaders: Record<string, string> = {};
   if (token) extraHeaders["X-Session-Token"] = token;
   if (pendingToken && functionName === "manage-app" && pendingActions.has(body?.action)) extraHeaders["X-Pending-Token"] = pendingToken;
-
-  const coalesceKey = (functionName === "manage-app" && COALESCE_ACTIONS.has(body?.action))
-    ? `${functionName}:${body.action}:${token || "anon"}`
-    : null;
-  if (coalesceKey) {
-    const existing = inflightReads.get(coalesceKey);
-    if (existing) return existing;
-  }
 
   const { invokeEdge } = await import("./lib/secureTransport");
   const { storeSessionPair, refreshNow, ensureFreshAccess, hasRefreshToken } = await import("./lib/sessionRefresh");
@@ -975,55 +820,37 @@ async function apiCall(functionName: string, body: any) {
     value instanceof Error ? value.message : String(value || ""),
   );
 
-  const run = (async () => {
-    let data: any;
-    try {
+  let data: any;
+  try {
+    data = await invokeEdge(functionName, body, { headers: extraHeaders });
+  } catch (err: any) {
+    const msg = String(err?.message || err || "");
+    const looksExpired = /access token expired|session expired|session revoked|authentication required|session invalid/i.test(msg);
+    // C.2: single retry after refresh on stale-session errors, except for the
+    // refresh endpoint itself and unauthenticated calls.
+    if (looksExpired && !(functionName === "manage-app" && skipRefreshActions.has(body?.action)) && (getSessionToken() || hasRefreshToken())) {
+      const ok = await refreshNow();
+      if (!ok) throw err;
+      const t3 = getSessionToken();
+      if (t3) extraHeaders["X-Session-Token"] = t3;
       data = await invokeEdge(functionName, body, { headers: extraHeaders });
-    } catch (err: any) {
-      const msg = String(err?.message || err || "");
-      const looksExpired = /access token expired|session expired|session revoked|authentication required|session invalid/i.test(msg);
-      // C.2: single retry after refresh on stale-session errors, except for the
-      // refresh endpoint itself and unauthenticated calls.
-      if (looksExpired && !(functionName === "manage-app" && skipRefreshActions.has(body?.action)) && (getSessionToken() || hasRefreshToken())) {
-        const ok = await refreshNow();
-        if (!ok) throw err;
-        const t3 = getSessionToken();
-        if (t3) extraHeaders["X-Session-Token"] = t3;
-        data = await invokeEdge(functionName, body, { headers: extraHeaders });
-      } else if (isTransientEdgeError(err)) {
-        await new Promise((r) => setTimeout(r, 750));
-        const t4 = getSessionToken();
-        if (t4) extraHeaders["X-Session-Token"] = t4;
-        data = await invokeEdge(functionName, body, { headers: extraHeaders });
-      } else {
-        throw err;
-      }
+    } else if (isTransientEdgeError(err)) {
+      await new Promise((r) => setTimeout(r, 750));
+      const t4 = getSessionToken();
+      if (t4) extraHeaders["X-Session-Token"] = t4;
+      data = await invokeEdge(functionName, body, { headers: extraHeaders });
+    } else {
+      throw err;
     }
-
-    if (data?.sessionToken) {
-      sessionSet("session_token" as any, data.sessionToken);
-    }
-    if (data?.refreshToken || data?.expiresAt) {
-      storeSessionPair(data);
-    }
-    // Plan-expiry surface: any endpoint (login, me, ...) that returns
-    // { success: false, error: "plan_finished", ... } is broadcast globally
-    // so a friendly "Plan Finished" screen can render — regardless of caller.
-    if (data && data.success === false && data.error === "plan_finished") {
-      try {
-        window.dispatchEvent(new CustomEvent("app:plan-finished", { detail: { contactInfo: data.contactInfo || null, planEndsAt: data.planEndsAt || null } }));
-      } catch {}
-    }
-    return data;
-  })();
-
-  if (coalesceKey) {
-    inflightReads.set(coalesceKey, run);
-    run.finally(() => {
-      if (inflightReads.get(coalesceKey) === run) inflightReads.delete(coalesceKey);
-    });
   }
-  return run;
+
+  if (data?.sessionToken) {
+    sessionSet("session_token" as any, data.sessionToken);
+  }
+  if (data?.refreshToken || data?.expiresAt) {
+    storeSessionPair(data);
+  }
+  return data;
 }
 
 
@@ -1107,24 +934,16 @@ const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   // Read cached user immediately for fast paint, then re-hydrate from the DB.
   const readCached = () => {
-    return readStoredSessionUser();
+    try {
+      const stored = sessionGet("user" as any);
+      return stored ? JSON.parse(stored) : null;
+    } catch { return null; }
   };
 
   const hydrateFromServer = async () => {
     let token = getSessionToken();
     const cachedBeforeHydrate = readCached();
-    const pendingAdminToken = (() => { try { return sessionGet("pending_admin_token" as any); } catch { return null; } })();
-    const cachedPendingAdmin = cachedBeforeHydrate?.role === "admin" && cachedBeforeHydrate?.pending === true;
     if (!token) {
-      // Admin password step creates a short-lived pending 2FA identity before a
-      // real session_token exists. Do not let the initial /me hydration sweep
-      // race clear that identity, or the 2FA page bounces back to /admin even
-      // after a correct password.
-      if (pendingAdminToken && cachedPendingAdmin) {
-        setUser(cachedBeforeHydrate);
-        setLoading(false);
-        return;
-      }
       try {
         const { hasRefreshToken, refreshNow } = await import("./lib/sessionRefresh");
         if (hasRefreshToken()) {
@@ -1134,13 +953,6 @@ const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       } catch {}
     }
     if (!token) {
-      const liveCached = readCached();
-      const livePendingAdminToken = (() => { try { return sessionGet("pending_admin_token" as any); } catch { return null; } })();
-      if (livePendingAdminToken && liveCached?.role === "admin" && liveCached?.pending === true) {
-        setUser(liveCached);
-        setLoading(false);
-        return;
-      }
       try { sessionRemove("user" as any); } catch {}
       setUser(null);
       setLoading(false);
@@ -1166,23 +978,7 @@ const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         return;
       }
       const msg = err instanceof Error ? err.message : String(err || "");
-      const path = typeof window !== "undefined" ? window.location.pathname : "";
-      const latestCached = readCached();
-      const adminFinalizeHandoff =
-        (path === "/admin" || path === "/admin-auth") &&
-        latestCached?.role === "admin" &&
-        latestCached?.pending !== true &&
-        !!getSessionToken() &&
-        sessionGet("admin_auth" as any) === "true";
-      if (adminFinalizeHandoff) {
-        setUser(latestCached);
-        return;
-      }
-      if (cachedBeforeHydrate?.id && /Secure connection|handshake|Failed to fetch|NetworkError|busy|timeout|temporar|Unknown session/i.test(msg)) {
-        setUser(cachedBeforeHydrate);
-        return;
-      }
-      if (pendingAdminToken && cachedPendingAdmin) {
+      if (cachedBeforeHydrate?.id && /Secure connection|handshake|Failed to fetch|NetworkError|busy|timeout|temporar/i.test(msg)) {
         setUser(cachedBeforeHydrate);
         return;
       }
@@ -1273,6 +1069,7 @@ function useSessionTimeoutGuard(role: "admin" | "user", enabled = true) {
   useEffect(() => {
     if (!enabled) return;
     let timer: any;
+    let poll: any;
     let cancelled = false;
     const doLogout = () => {
       notify.info("🔒 Session timed out", {
@@ -1285,32 +1082,45 @@ function useSessionTimeoutGuard(role: "admin" | "user", enabled = true) {
       // `Clear-Site-Data: "*"` header + JS fallback.
       fastClearCookiesRedirect();
     };
-    const armForDeadline = (deadline: number) => {
-      if (timer) clearTimeout(timer);
-      if (!deadline) return;
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) { doLogout(); return; }
-      timer = setTimeout(doLogout, remaining);
-    };
-
-    ensureSessionStarted();
-    armForDeadline(getSessionDeadline(role));
-
     (async () => {
       let minutes = 0;
       try {
         const res = await apiCall("manage-app", { action: "get_settings", key: SESSION_CONFIG_KEY_FOR(role) });
         minutes = Number(res?.value?.timeoutMinutes) || 0;
       } catch {}
-      if (cancelled) return;
-      if (minutes > 0) writeCachedTimeoutMinutes(role, minutes);
-      if (!minutes || minutes <= 0) return;
-      armForDeadline(getSessionDeadline(role, minutes));
-    })();
+      if (cancelled || !minutes || minutes <= 0) return;
 
+      const armFrom = (started: number) => {
+        const remaining = started + minutes * 60_000 - Date.now();
+        if (remaining <= 0) { doLogout(); return; }
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(doLogout, remaining);
+      };
+
+      const started = Number(sessionGet("session_started_at" as any) || "0");
+      if (started) {
+        armFrom(started);
+      } else if (role === "admin") {
+        // Admin has no email load — start immediately.
+        markSessionStart();
+        armFrom(Date.now());
+      } else {
+        // User: wait for EmailViewer to call markSessionStart after first inbox load.
+        poll = setInterval(() => {
+          if (cancelled) return;
+          const s = Number(sessionGet("session_started_at" as any) || "0");
+          if (s) {
+            clearInterval(poll);
+            poll = null;
+            armFrom(s);
+          }
+        }, 500);
+      }
+    })();
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      if (poll) clearInterval(poll);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role, enabled]);
@@ -1519,7 +1329,7 @@ function AutoPopupNotification() {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.18 }}
         >
-          <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-md" onClick={() => dismiss(false)} />
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => dismiss(false)} />
           <motion.div
             role="dialog"
             aria-modal="true"
@@ -1527,9 +1337,13 @@ function AutoPopupNotification() {
             animate={{ scale: 1, y: 0, opacity: 1 }}
             exit={{ scale: 0.96, y: 8, opacity: 0 }}
             transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-            className="relative w-full max-w-[560px] rounded-3xl overflow-hidden bg-white border border-slate-200"
+            className="relative w-full max-w-[560px] rounded-3xl overflow-hidden"
             style={{
-              boxShadow: "0 40px 100px -20px rgba(15,23,42,0.35), 0 2px 8px -2px rgba(15,23,42,0.08)",
+              background: "rgba(14,14,17,0.92)",
+              backdropFilter: "blur(28px) saturate(160%)",
+              WebkitBackdropFilter: "blur(28px) saturate(160%)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              boxShadow: "0 40px 100px -20px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.06)",
             }}
           >
             {/* priority accent bar */}
@@ -1538,15 +1352,15 @@ function AutoPopupNotification() {
             {/* close */}
             <button
               onClick={() => dismiss(false)}
-              className="absolute top-3 right-3 z-10 p-1.5 rounded-full text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+              className="absolute top-3 right-3 z-10 p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
               aria-label="Close"
             >
               <X className="w-4 h-4" />
             </button>
 
-            {/* hero image — prominent on user side */}
+            {/* hero image */}
             {current.image_url ? (
-              <div className="relative aspect-[16/9] w-full overflow-hidden bg-slate-100">
+              <div className="relative aspect-[16/9] w-full overflow-hidden bg-zinc-900">
                 <img
                   src={current.image_url}
                   alt=""
@@ -1555,6 +1369,7 @@ function AutoPopupNotification() {
                   className="absolute inset-0 w-full h-full object-cover"
                   onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
                 />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
               </div>
             ) : (
               <div className="pt-10" />
@@ -1566,30 +1381,30 @@ function AutoPopupNotification() {
                 <NotifIconTile
                   platformId={current.platform_icon}
                   size={52}
-                  tone="light"
+                  tone="dark"
                   fallback={<CatIcon className={`w-6 h-6 ${cat.color}`} />}
                 />
                 <div className="flex flex-col">
-                  <span className="text-[10.5px] uppercase tracking-[0.16em] text-slate-500 font-semibold">
+                  <span className="text-[10.5px] uppercase tracking-[0.16em] text-zinc-400 font-medium">
                     {cat.label}
                   </span>
-                  <span className="text-[11px] text-slate-400 font-normal mt-0.5">
+                  <span className="text-[11px] text-zinc-500 font-light mt-0.5">
                     {formatRelative(current.created_at)}
                   </span>
                 </div>
               </div>
 
               <h2
-                className="text-slate-900 text-[25px] sm:text-[28px] leading-tight mb-2 font-bold"
-                style={{ letterSpacing: "-0.015em" }}
+                className="text-white text-[25px] sm:text-[28px] leading-tight mb-2"
+                style={{ fontFamily: "'Instrument Serif', 'Cormorant Garamond', ui-serif, Georgia, serif", letterSpacing: "-0.015em" }}
               >
                 {current.title}
               </h2>
-              <p className="text-slate-700 text-[15px] sm:text-[15.5px] leading-relaxed whitespace-pre-wrap">
+              <p className="text-zinc-300 text-[15px] sm:text-[15.5px] leading-relaxed font-light whitespace-pre-wrap">
                 {current.body}
               </p>
               {current.description && (
-                <p className="mt-3 text-slate-500 text-[14px] leading-relaxed whitespace-pre-wrap line-clamp-6">
+                <p className="mt-3 text-zinc-400 text-[14px] leading-relaxed font-light whitespace-pre-wrap line-clamp-6">
                   {current.description}
                 </p>
               )}
@@ -1597,7 +1412,7 @@ function AutoPopupNotification() {
               <div className="mt-5 flex flex-col-reverse sm:flex-row gap-2.5">
                 <button
                   onClick={() => dismiss(false)}
-                  className="flex-1 py-3 rounded-xl text-[14px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors"
+                  className="flex-1 py-3 rounded-xl text-[14px] font-medium text-zinc-300 bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 transition-colors"
                 >
                   Later
                 </button>
@@ -1607,21 +1422,21 @@ function AutoPopupNotification() {
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={() => { logNotificationEvent(current.id, "clicked", { url: current.action_url }).catch(() => {}); markNotificationRead(current.id).catch(() => {}); dismiss(true); }}
-                    className="flex-1 py-3 rounded-xl text-[14px] font-bold text-white bg-slate-900 hover:bg-slate-800 flex items-center justify-center gap-1.5 transition-colors"
+                    className="flex-1 py-3 rounded-xl text-[14px] font-semibold text-white bg-white hover:bg-zinc-100 !text-black flex items-center justify-center gap-1.5 transition-colors"
                   >
                     {current.action_label} <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 ) : (
                   <button
                     onClick={openInBell}
-                    className="flex-1 py-3 rounded-xl text-[14px] font-bold text-white bg-slate-900 hover:bg-slate-800 transition-colors"
+                    className="flex-1 py-3 rounded-xl text-[14px] font-semibold text-black bg-white hover:bg-zinc-100 transition-colors"
                   >
                     Read more
                   </button>
                 )}
               </div>
 
-              <p className="mt-3 text-center text-[10.5px] text-slate-400 tracking-wide">
+              <p className="mt-3 text-center text-[10.5px] text-zinc-500 tracking-wide">
                 Dismiss — you can reopen this from the <Bell className="inline w-3 h-3 -mt-0.5" /> bell any time.
               </p>
             </div>
@@ -1718,31 +1533,34 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
   const groups = useMemo(() => groupByDate(filtered), [filtered]);
 
   const Header = (
-    <div className="px-5 pt-5 pb-3 border-b border-slate-200 bg-white">
+    <div className="px-5 pt-5 pb-3 border-b border-white/[0.06]">
       <div className="flex items-center justify-between">
         <div className="flex items-baseline gap-2.5">
-          <h3 className="text-slate-900 text-[22px] leading-none font-bold" style={{ letterSpacing: "-0.015em" }}>
+          <h3
+            className="text-white text-[22px] leading-none"
+            style={{ fontFamily: "'Instrument Serif', 'Cormorant Garamond', ui-serif, Georgia, serif", letterSpacing: "-0.015em" }}
+          >
             {detail ? "Notification" : "Notifications"}
           </h3>
           {!detail && items.filter((n) => !n.read).length > 0 && (
-            <span className="text-[10.5px] font-semibold text-rose-600 tracking-wider uppercase">
+            <span className="text-[10.5px] font-medium text-rose-300/90 tracking-wider uppercase">
               {items.filter((n) => !n.read).length} new
             </span>
           )}
         </div>
         <div className="flex items-center gap-1">
           {detail ? (
-            <button onClick={() => setSelected(null)} className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors" aria-label="Back">
+            <button onClick={() => setSelected(null)} className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors" aria-label="Back">
               <ArrowLeft className="w-4 h-4" />
             </button>
           ) : (
             items.some((n) => !n.read) && (
-              <button onClick={handleMarkAllRead} title="Mark all read" className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors">
+              <button onClick={handleMarkAllRead} title="Mark all read" className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors">
                 <CheckCircle2 className="w-4 h-4" />
               </button>
             )
           )}
-          <button onClick={onClose} className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors" aria-label="Close">
+          <button onClick={onClose} className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors" aria-label="Close">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -1755,8 +1573,8 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`px-3 py-1.5 rounded-full text-[11.5px] font-semibold tracking-wide capitalize transition-colors whitespace-nowrap ${
-                  tab === t ? "bg-slate-900 text-white" : "text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200"
+                className={`px-3 py-1.5 rounded-full text-[11.5px] font-medium tracking-wide capitalize transition-colors whitespace-nowrap ${
+                  tab === t ? "bg-white text-black" : "text-zinc-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08]"
                 }`}
               >
                 {t}
@@ -1764,13 +1582,13 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
             ))}
           </div>
           <div className="mt-3 relative">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search notifications"
               aria-label="Search notifications"
-              className="w-full pl-9 pr-3 py-2 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900 focus:bg-white transition-colors"
+              className="w-full pl-9 pr-3 py-2 rounded-xl text-[12.5px] bg-white/[0.04] border border-white/[0.06] text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/20"
             />
           </div>
         </>
@@ -1779,26 +1597,26 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
   );
 
   const List = (
-    <div className="overflow-y-auto overscroll-contain flex-1 bg-slate-50">
+    <div className="overflow-y-auto overscroll-contain flex-1">
       {loading && items.length === 0 && (
-        <div className="py-16 text-center text-slate-500 text-sm font-medium tracking-wide">
-          <div className="w-5 h-5 mx-auto mb-3 border-2 border-slate-200 border-t-slate-900 rounded-full animate-spin" />
+        <div className="py-16 text-center text-zinc-500 text-sm font-light tracking-wide">
+          <div className="w-5 h-5 mx-auto mb-3 border border-zinc-600 border-t-rose-500 rounded-full animate-spin" />
           Loading
         </div>
       )}
       {!loading && filtered.length === 0 && (
         <div className="py-20 px-6 text-center">
-          <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-sm">
-            <Bell className="w-6 h-6 text-slate-400 stroke-[1.5]" />
+          <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-white/[0.04] border border-white/10 flex items-center justify-center">
+            <Bell className="w-6 h-6 text-zinc-500 stroke-[1.25]" />
           </div>
-          <p className="text-slate-900 text-[14px] font-semibold tracking-wide">You're all caught up</p>
-          <p className="text-slate-500 text-[12px] mt-1">Nothing new here right now.</p>
+          <p className="text-zinc-200 text-[14px] font-light tracking-wide">You're all caught up</p>
+          <p className="text-zinc-500 text-[12px] mt-1 font-light">Nothing new here right now.</p>
         </div>
       )}
       {groups.map(({ label, rows }) => (
         <div key={label}>
-          <div className="px-5 pt-4 pb-2 text-[10px] uppercase tracking-[0.14em] text-slate-500 font-bold">{label}</div>
-          <ul className="px-3 space-y-2">
+          <div className="px-5 pt-4 pb-1 text-[10px] uppercase tracking-[0.14em] text-zinc-500 font-medium">{label}</div>
+          <ul>
             {rows.map((n) => {
               const cat = categoryMeta(n.category);
               const CatIcon = cat.icon;
@@ -1807,44 +1625,46 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
                 <li key={n.id} className="group relative">
                   <button
                     onClick={() => handleOpenDetail(n)}
-                    className={`w-full text-left rounded-2xl overflow-hidden transition-all border ${!n.read ? "bg-white border-slate-200 shadow-sm hover:shadow-md hover:border-slate-300" : "bg-white/60 border-slate-200/70 hover:bg-white hover:border-slate-200"}`}
+                    className={`w-full text-left px-5 py-3.5 flex gap-3 transition-colors ${!n.read ? "bg-white/[0.02] hover:bg-white/[0.05]" : "hover:bg-white/[0.03]"}`}
                   >
-                    {/* Hero image if present — prominent on user side */}
-                    {n.image_url && (
-                      <div className="relative aspect-[16/7] w-full overflow-hidden bg-slate-100">
-                        <img src={n.image_url} referrerPolicy="no-referrer" loading="lazy" alt=""
-                          className="absolute inset-0 w-full h-full object-cover"
-                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-                        <div className={`absolute left-0 top-0 bottom-0 w-[3px] ${accent}`} />
-                      </div>
-                    )}
-                    <div className="flex gap-3 px-4 py-3.5">
-                      {!n.image_url && <span className={`w-1 rounded-full ${accent} opacity-70 self-stretch min-h-[36px] flex-shrink-0`} />}
+                    <div className="flex flex-col items-center flex-shrink-0">
+                      <span className={`w-1 h-full rounded-full ${accent} opacity-70`} style={{ minHeight: 30 }} />
+                    </div>
+                    {n.platform_icon ? (
                       <NotifIconTile
                         platformId={n.platform_icon}
-                        size={44}
-                        tone="light"
+                        size={46}
+                        tone="dark"
                         fallback={<CatIcon className={`w-4 h-4 ${cat.color}`} />}
                       />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-baseline justify-between gap-3">
-                          <p className={`text-[13.5px] leading-snug truncate ${!n.read ? "text-slate-900 font-bold" : "text-slate-600 font-medium"}`}>
-                            {n.title}
-                          </p>
-                          <span className="text-[10.5px] text-slate-400 font-medium tabular-nums flex-shrink-0 transition-opacity group-hover:opacity-0" title={new Date(n.created_at).toLocaleString()}>
-                            {formatRelative(n.created_at)}
-                          </span>
-                        </div>
-                        <p className="text-slate-500 text-[12px] mt-1 leading-relaxed line-clamp-2">{n.body}</p>
+                    ) : n.image_url ? (
+                      <img src={n.image_url} referrerPolicy="no-referrer" loading="lazy" alt=""
+                        className="w-11 h-11 rounded-xl object-cover flex-shrink-0 bg-zinc-800 ring-1 ring-white/10 shadow-lg" />
+                    ) : (
+                      <NotifIconTile
+                        size={46}
+                        tone="dark"
+                        fallback={<CatIcon className={`w-4 h-4 ${cat.color}`} />}
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <p className={`text-[13px] leading-snug truncate ${!n.read ? "text-white font-medium" : "text-zinc-400 font-normal"}`}>
+                          {n.title}
+                        </p>
+                        <span className="text-[10.5px] text-zinc-500 font-light tabular-nums flex-shrink-0 transition-opacity group-hover:opacity-0" title={new Date(n.created_at).toLocaleString()}>
+                          {formatRelative(n.created_at)}
+                        </span>
                       </div>
-                      {!n.read && (
-                        <span className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.5)] mt-1.5 flex-shrink-0 transition-opacity group-hover:opacity-0" />
-                      )}
+                      <p className="text-zinc-500 text-[12px] mt-1 leading-relaxed line-clamp-2 font-light">{n.body}</p>
                     </div>
+                    {!n.read && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.7)] mt-1.5 flex-shrink-0 transition-opacity group-hover:opacity-0" />
+                    )}
                   </button>
                   {!n.locked && (
-                    <div className="absolute right-3 top-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 pointer-events-none group-hover:pointer-events-auto">
-                      <button onClick={(e) => { e.stopPropagation(); handleDelete(n.id); }} className="p-1.5 rounded-md bg-white border border-slate-200 text-slate-500 hover:text-rose-600 hover:border-rose-200 shadow-sm" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 pointer-events-none group-hover:pointer-events-auto">
+                      <button onClick={(e) => { e.stopPropagation(); handleDelete(n.id); }} className="p-1.5 rounded-md bg-black/70 backdrop-blur border border-white/10 text-zinc-300 hover:text-rose-300 hover:bg-black/80 shadow-lg" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
                   )}
                 </li>
@@ -1853,7 +1673,6 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
           </ul>
         </div>
       ))}
-      <div className="h-4" />
     </div>
   );
 
@@ -1862,10 +1681,11 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
     const CatIcon = cat.icon;
     const accent = PRIORITY_ACCENT[detail.priority || "normal"] || PRIORITY_ACCENT.normal;
     return (
-      <div className="overflow-y-auto overscroll-contain flex-1 bg-white">
+      <div className="overflow-y-auto overscroll-contain flex-1">
         {detail.image_url && (
-          <div className="relative aspect-[16/9] w-full overflow-hidden bg-slate-100">
+          <div className="relative aspect-[16/9] w-full overflow-hidden bg-zinc-900">
             <img src={detail.image_url} alt="" referrerPolicy="no-referrer" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
           </div>
         )}
         <div className="px-6 py-5">
@@ -1873,49 +1693,49 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
             <NotifIconTile
               platformId={detail.platform_icon}
               size={54}
-              tone="light"
+              tone="dark"
               fallback={<CatIcon className={`w-6 h-6 ${cat.color}`} />}
             />
             <div className="min-w-0 flex-1 pt-0.5">
               <div className="flex items-center gap-2 mb-1">
                 <span className={`w-1.5 h-1.5 rounded-full ${accent}`} />
-                <span className="text-[10.5px] uppercase tracking-[0.16em] text-slate-500 font-semibold">
+                <span className="text-[10.5px] uppercase tracking-[0.16em] text-zinc-400 font-medium">
                   {cat.label}
                 </span>
-                <span className="text-[10.5px] text-slate-400 ml-auto">{new Date(detail.created_at).toLocaleString()}</span>
+                <span className="text-[10.5px] text-zinc-500 ml-auto">{new Date(detail.created_at).toLocaleString()}</span>
               </div>
-              <h2 className="text-slate-900 text-[24px] leading-tight font-bold" style={{ letterSpacing: "-0.015em" }}>
+              <h2 className="text-white text-[24px] leading-tight" style={{ fontFamily: "'Instrument Serif', ui-serif, Georgia, serif", letterSpacing: "-0.015em" }}>
                 {detail.title}
               </h2>
             </div>
           </div>
-          <p className="text-slate-700 text-[14px] leading-relaxed whitespace-pre-wrap">{detail.body}</p>
+          <p className="text-zinc-200 text-[14px] leading-relaxed font-light whitespace-pre-wrap">{detail.body}</p>
           {detail.description && (
-            <p className="mt-4 text-slate-500 text-[13px] leading-relaxed whitespace-pre-wrap">{detail.description}</p>
+            <p className="mt-4 text-zinc-400 text-[13px] leading-relaxed font-light whitespace-pre-wrap">{detail.description}</p>
           )}
           <div className="mt-6 flex flex-wrap gap-2">
             {detail.action_url && detail.action_label && !/snooze|archive|24h/i.test(detail.action_label) && (
               <a href={detail.action_url} target="_blank" rel="noopener noreferrer"
                 onClick={() => logNotificationEvent(detail.id, "clicked", { url: detail.action_url }).catch(() => {})}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-bold bg-slate-900 text-white hover:bg-slate-800 transition-colors">
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-semibold bg-white text-black hover:bg-zinc-100 transition-colors">
                 {detail.action_label} <ExternalLink className="w-3.5 h-3.5" />
               </a>
             )}
             {detail.action2_url && detail.action2_label && !/snooze|archive|24h/i.test(detail.action2_label) && (
               <a href={detail.action2_url} target="_blank" rel="noopener noreferrer"
                 onClick={() => logNotificationEvent(detail.id, "clicked", { url: detail.action2_url, secondary: true }).catch(() => {})}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-semibold bg-slate-100 text-slate-900 hover:bg-slate-200 transition-colors">
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium bg-white/[0.06] text-white hover:bg-white/[0.12] border border-white/10 transition-colors">
                 {detail.action2_label}
               </a>
             )}
           </div>
-          <div className="mt-6 pt-4 border-t border-slate-200 flex gap-2">
+          <div className="mt-6 pt-4 border-t border-white/[0.05] flex gap-2">
             {detail.locked ? (
-              <div className="flex-1 py-2 rounded-lg text-[12px] text-slate-500 bg-slate-50 border border-slate-200 inline-flex items-center justify-center gap-1.5">
+              <div className="flex-1 py-2 rounded-lg text-[12px] text-zinc-500 bg-white/[0.02] border border-white/5 inline-flex items-center justify-center gap-1.5">
                 <Lock className="w-3.5 h-3.5" /> Locked by admin
               </div>
             ) : (
-              <button onClick={() => handleDelete(detail.id)} className="flex-1 py-2 rounded-lg text-[12px] font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors inline-flex items-center justify-center gap-1.5">
+              <button onClick={() => handleDelete(detail.id)} className="flex-1 py-2 rounded-lg text-[12px] text-rose-300 bg-rose-500/[0.06] hover:bg-rose-500/[0.12] border border-rose-500/20 transition-colors inline-flex items-center justify-center gap-1.5">
                 <Trash2 className="w-3.5 h-3.5" /> Delete
               </button>
             )}
@@ -1928,11 +1748,12 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
   if (!open || typeof document === "undefined") return null;
 
   const surfaceStyle: React.CSSProperties = {
-    background: "#ffffff",
-    border: "1px solid rgb(226 232 240)",
-    boxShadow: "0 30px 80px -20px rgba(15,23,42,0.35), 0 2px 8px -2px rgba(15,23,42,0.06)",
+    background: "rgba(10,10,12,0.88)",
+    backdropFilter: "blur(32px) saturate(160%)",
+    WebkitBackdropFilter: "blur(32px) saturate(160%)",
+    border: "1px solid rgba(255,255,255,0.06)",
+    boxShadow: "0 30px 80px -20px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.05)",
   };
-
 
   const Panel = isMobile ? (
     <motion.div
@@ -1979,7 +1800,7 @@ function NotificationCenter({ open, onClose, initialId, items, loading, onChange
         exit={{ opacity: 0 }}
         transition={{ duration: 0.18 }}
       >
-        <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm" onClick={onClose} />
+        <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" onClick={onClose} />
         {Panel}
       </motion.div>
     </AnimatePresence>,
@@ -2062,323 +1883,14 @@ function NotificationBell() {
 }
 
 // --- TV Auto-Login header button + Coming Soon popup ---
-
-function userFriendlyTvError(message?: string | null) {
-  const raw = String(message || "").trim();
-  if (!raw) return "Please try again.";
-  const lower = raw.toLowerCase();
-  if (/locator|selector|timeout|waiting for|tvsignup|playwright|button:has-text|call log/.test(lower)) {
-    return "Code rejected. Open Netflix on your TV, generate a fresh code, and try again.";
-  }
-  if (/invalid|wasn.?t right|incorrect|not recognized|try again/.test(lower)) {
-    return "Netflix rejected the code. Generate a fresh code on your TV and try again.";
-  }
-  if (/cookies?|login|password|email|expired/.test(lower)) {
-    return "This account isn't ready right now. Please contact the admin.";
-  }
-  return raw.length > 180 ? `${raw.slice(0, 177)}…` : raw;
-}
-
-type TvLoginStatus = "idle" | "verifying" | "checking" | "queued" | "running" | "in_progress" | "success" | "invalid_code" | "cookies_expired" | "no_cookies" | "error";
-type TvRunInfo = {
-  accountLabel?: string | null;
-  imapMasked?: string | null;
-  eventId?: string | null;
-  message?: string | null;
-  runUrl?: string | null;
-  createdAt?: string | null;
-  finishedAt?: string | null;
-  result?: string | null;
-};
-
-const TV_ACTIVE_STATUSES = new Set<TvLoginStatus>(["verifying", "checking", "queued", "running", "in_progress"]);
-const TV_TERMINAL_STATUSES = new Set<TvLoginStatus>(["success", "invalid_code", "cookies_expired", "no_cookies", "error"]);
-
-function isTvActiveStatus(status: TvLoginStatus): boolean {
-  return TV_ACTIVE_STATUSES.has(status);
-}
-
-function isTvRetryableStatus(status: TvLoginStatus): boolean {
-  return status === "success" || status === "invalid_code" || status === "error";
-}
-
-function normalizeTvStatus(value: unknown): TvLoginStatus {
-  const s = String(value || "");
-  return (["idle", "verifying", "checking", "queued", "running", "in_progress", "success", "invalid_code", "cookies_expired", "no_cookies", "error"] as TvLoginStatus[]).includes(s as TvLoginStatus)
-    ? (s as TvLoginStatus)
-    : "idle";
-}
-
-function splitTvCode(value: unknown): string[] {
-  const clean = String(value || "").replace(/\D/g, "").slice(0, 8);
-  return Array.from({ length: 8 }, (_, i) => clean[i] || "");
-}
-
-function maskTvEmail(value: string): string {
-  const raw = String(value || "").trim();
-  const at = raw.indexOf("@");
-  if (at <= 1) return raw;
-  const name = raw.slice(0, at);
-  const domain = raw.slice(at);
-  return `${name.slice(0, 3)}•••${name.slice(-2)}${domain}`;
-}
-
-function tvRunInfoFromEvent(ev: any): TvRunInfo {
-  return {
-    accountLabel: ev?.account_label || null,
-    imapMasked: ev?.imap_user ? maskTvEmail(String(ev.imap_user)) : null,
-    eventId: ev?.id || null,
-    message: ev?.message || null,
-    runUrl: ev?.github_run_url || null,
-    createdAt: ev?.created_at || null,
-    finishedAt: ev?.finished_at || null,
-    result: ev?.result || null,
-  };
-}
-
-function formatTvRunTime(iso?: string | null): string {
-  if (!iso) return "—";
-  try {
-    return new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
-  } catch { return String(iso); }
-}
-
-function formatTvDuration(start?: string | null, end?: string | null): string {
-  const a = start ? new Date(start).getTime() : 0;
-  const b = end ? new Date(end).getTime() : Date.now();
-  if (!Number.isFinite(a) || !Number.isFinite(b) || !a || b < a) return "—";
-  const sec = Math.max(1, Math.round((b - a) / 1000));
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const rem = sec % 60;
-  return `${min}m ${String(rem).padStart(2, "0")}s`;
-}
-
-function TvRunDetails({ info, status, code, theme = "light" }: { info: TvRunInfo; status: TvLoginStatus; code?: string; theme?: "dark" | "light" }) {
-  if (!info?.eventId && !info?.createdAt) return null;
-  const dark = theme === "dark";
-  const terminal = TV_TERMINAL_STATUSES.has(status);
-  const active = TV_ACTIVE_STATUSES.has(status);
-  const tone = status === "success" ? "emerald" : active ? "rose" : status === "idle" ? "slate" : "amber";
-  const shell = dark
-    ? "border-white/10 bg-white/[0.04] text-white"
-    : "border-slate-200 bg-slate-50/80 text-slate-900";
-  const muted = dark ? "text-white/55" : "text-slate-500";
-  const value = dark ? "text-white" : "text-slate-900";
-  const badge = tone === "emerald"
-    ? dark ? "bg-emerald-500/15 text-emerald-200 border-emerald-400/25" : "bg-emerald-50 text-emerald-700 border-emerald-200"
-    : tone === "rose"
-      ? dark ? "bg-rose-500/15 text-rose-200 border-rose-400/25" : "bg-rose-50 text-rose-700 border-rose-200"
-      : dark ? "bg-amber-500/15 text-amber-200 border-amber-400/25" : "bg-amber-50 text-amber-700 border-amber-200";
-  const label = status === "success" ? "Process completed" : active ? "Process running" : "Process ended";
-  return (
-    <div className={`mt-5 rounded-2xl border p-4 ${shell}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div className={`text-[10px] uppercase tracking-[0.18em] font-black ${muted}`}>TV sign-in details</div>
-        <div className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${badge}`}>{label}</div>
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] sm:text-xs">
-        <div className={`rounded-xl px-3 py-2 ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
-          <div className={muted}>Started</div>
-          <div className={`mt-0.5 font-bold ${value}`}>{formatTvRunTime(info.createdAt)}</div>
-        </div>
-        <div className={`rounded-xl px-3 py-2 ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
-          <div className={muted}>{terminal ? "Finished" : "Running for"}</div>
-          <div className={`mt-0.5 font-bold ${value}`}>{terminal ? formatTvRunTime(info.finishedAt) : formatTvDuration(info.createdAt, null)}</div>
-        </div>
-        <div className={`rounded-xl px-3 py-2 ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
-          <div className={muted}>Taken time</div>
-          <div className={`mt-0.5 font-bold ${value}`}>{formatTvDuration(info.createdAt, info.finishedAt)}</div>
-        </div>
-        <div className={`rounded-xl px-3 py-2 ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
-          <div className={muted}>Code</div>
-          <div className={`mt-0.5 font-bold tabular-nums ${value}`}>{code || "—"}</div>
-        </div>
-      </div>
-      {(info.accountLabel || info.imapMasked) && (
-        <div className={`mt-2 rounded-xl px-3 py-2 text-[11px] sm:text-xs ${dark ? "bg-black/20" : "bg-white border border-slate-100"}`}>
-          <div className={muted}>Account</div>
-          <div className={`mt-0.5 font-bold truncate ${value}`}>{info.imapMasked || info.accountLabel}{info.accountLabel && info.imapMasked ? ` · ${info.accountLabel}` : ""}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TvRecentRuns({ events, onRefresh }: { events: any[]; onRefresh: () => void }) {
-  if (!events.length) return null;
-  const statusLabel = (ev: any) => String(ev?.status || "").replace(/_/g, " ") || "unknown";
-  const dot = (status: string) => status === "success" ? "bg-emerald-500" : ["queued", "running", "in_progress"].includes(status) ? "bg-rose-500 animate-pulse" : "bg-amber-500";
-  return (
-    <div className="mt-6 rounded-3xl bg-white border border-slate-200 shadow-sm p-5 xl:p-6">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="font-bold text-slate-900 flex items-center gap-2 text-sm"><Clock className="w-4 h-4 text-slate-500" /> Recent TV sign-ins</h3>
-        <button type="button" onClick={onRefresh} className="p-1.5 rounded-full hover:bg-slate-100" title="Refresh"><RefreshCw className="w-3.5 h-3.5 text-slate-500" /></button>
-      </div>
-      <ul className="divide-y divide-slate-100 max-h-[360px] sm:max-h-[420px] overflow-y-auto overscroll-contain [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-        {events.map((ev) => {
-          const status = String(ev?.status || "");
-          return (
-            <li key={ev.id} className="py-3 flex items-start gap-3">
-              <div className={`mt-1.5 w-2 h-2 rounded-full ${dot(status)}`} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs text-slate-700 truncate font-bold capitalize">{statusLabel(ev)}</div>
-                  <div className="text-[11px] text-slate-400 shrink-0">{formatTvDuration(ev.created_at, ev.finished_at)}</div>
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5 truncate">{ev.imap_user ? maskTvEmail(String(ev.imap_user)) : ev.account_label || "TV sign-in"}</div>
-                <div className="text-[11px] text-slate-400 mt-0.5">Started <b>{formatTvRunTime(ev.created_at)}</b>{ev.finished_at ? <> · Finished <b>{formatTvRunTime(ev.finished_at)}</b></> : null}</div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
-const tvActiveCopy = [
-  "Signing you in",
-  "Almost there",
-  "Just a moment",
-  "Finishing up",
-];
-
-function getTvProgress(status: TvLoginStatus, elapsedMs: number) {
-  if (status === "verifying") return { title: "Signing you in", detail: "Please keep your TV on.", progress: 14 };
-  if (status === "checking") return { title: "Signing you in", detail: "Please keep your TV on.", progress: 28 };
-  const activeIndex = Math.floor(elapsedMs / 2200) % tvActiveCopy.length;
-  if (status === "queued") {
-    return {
-      title: tvActiveCopy[activeIndex],
-      detail: "Please keep your TV on.",
-      progress: Math.min(72, 34 + Math.floor(elapsedMs / 700)),
-    };
-  }
-  if (status === "running" || status === "in_progress") {
-    return {
-      title: tvActiveCopy[(activeIndex + 1) % tvActiveCopy.length],
-      detail: "Please keep your TV on.",
-      progress: Math.min(94, 58 + Math.floor(elapsedMs / 650)),
-    };
-  }
-  return { title: "Sign in on TV", detail: "", progress: 0 };
-}
-
-function getTvTerminalCopy(status: TvLoginStatus, message?: string | null) {
-  if (status === "success") return { title: "TV signed in", detail: "All set — enjoy!", tone: "success" as const };
-  if (status === "invalid_code") return { title: "Code rejected — try again", detail: "Open Netflix on your TV and generate a fresh code.", tone: "danger" as const };
-  if (status === "cookies_expired") return { title: "Account not ready", detail: "Please contact the admin.", tone: "warning" as const };
-  if (status === "no_cookies") return { title: "Account not ready", detail: "Please contact the admin.", tone: "warning" as const };
-  if (status === "error") return { title: "Could not sign in — try again", detail: userFriendlyTvError(message), tone: "danger" as const };
-  return null;
-}
-
-function TvProcessButton({
-  status,
-  elapsedMs,
-  isComplete,
-  message,
-  onSubmit,
-  onRetry,
-  idleText,
-  theme = "dark",
-}: {
-  status: TvLoginStatus;
-  elapsedMs: number;
-  isComplete: boolean;
-  message?: string | null;
-  onSubmit: () => void;
-  onRetry: () => void;
-  idleText: string;
-  theme?: "dark" | "light";
-}) {
-  const active = ["verifying", "checking", "queued", "running", "in_progress"].includes(status);
-  const terminal = ["success", "invalid_code", "cookies_expired", "no_cookies", "error"].includes(status);
-  const process = getTvProgress(status, elapsedMs);
-  const terminalCopy = getTvTerminalCopy(status, message);
-  const canSubmit = status === "idle" && isComplete;
-  const dark = theme === "dark";
-  const disabled = active || (status === "idle" && !isComplete) || status === "no_cookies" || status === "cookies_expired";
-  const click = terminal && status !== "no_cookies" && status !== "cookies_expired" ? onRetry : onSubmit;
-  const base = dark
-    ? "mt-6 w-full min-h-12 rounded-xl font-bold text-sm tracking-wide transition-all active:scale-[0.98] overflow-hidden relative"
-    : "mt-8 w-full min-h-14 2xl:min-h-16 rounded-xl xl:rounded-2xl font-black text-sm xl:text-base tracking-wide transition-all active:scale-[0.98] overflow-hidden relative";
-  const idleClass = canSubmit
-    ? dark
-      ? "bg-gradient-to-r from-[#e50914] to-[#b0060f] text-white shadow-lg shadow-[#e50914]/30 hover:shadow-[#e50914]/50 hover:brightness-110"
-      : "bg-gradient-to-r from-rose-600 to-red-600 text-white shadow-lg shadow-rose-600/25 hover:shadow-rose-600/40 hover:brightness-110"
-    : dark
-      ? "bg-white/[0.06] text-white/40 cursor-not-allowed"
-      : "bg-slate-100 text-slate-400 cursor-not-allowed";
-  const activeClass = dark
-    ? "bg-white/[0.08] border border-white/10 text-white shadow-[0_16px_40px_-22px_rgba(229,9,20,0.65)] cursor-wait"
-    : "bg-slate-900 text-white shadow-[0_20px_42px_-24px_rgba(15,23,42,0.75)] cursor-wait";
-  const terminalClass = terminalCopy?.tone === "success"
-    ? dark ? "bg-emerald-500/15 border border-emerald-400/30 text-emerald-200" : "bg-emerald-50 border border-emerald-200 text-emerald-800"
-    : terminalCopy?.tone === "warning"
-      ? dark ? "bg-amber-500/15 border border-amber-400/30 text-amber-200" : "bg-amber-50 border border-amber-200 text-amber-800"
-      : dark ? "bg-red-500/15 border border-red-400/30 text-red-200 hover:bg-red-500/20" : "bg-red-50 border border-red-200 text-red-700 hover:bg-red-100";
-  const title = terminalCopy?.title || (active ? process.title : idleText);
-  const detail = terminalCopy?.detail || (active ? process.detail : "");
-
-  return (
-    <button type="button" onClick={click} disabled={disabled} className={`${base} ${active ? activeClass : terminal ? terminalClass : idleClass}`}>
-      <span className="relative z-10 flex min-h-[inherit] flex-col items-center justify-center gap-0.5 px-4 py-2.5 text-center leading-tight">
-        <span className="inline-flex items-center justify-center gap-2">
-          {active && <Loader2 className="w-4 h-4 animate-spin" />}
-          {terminalCopy?.tone === "success" && <CheckCircle2 className="w-4 h-4" />}
-          <span>{title}</span>
-        </span>
-        {detail && <span className={`text-[10.5px] sm:text-[11px] font-semibold ${dark ? "opacity-70" : "opacity-75"}`}>{detail}</span>}
-      </span>
-      {active && (
-        <span className={`absolute inset-x-0 bottom-0 h-1 ${dark ? "bg-white/10" : "bg-white/15"}`}>
-          <span className="block h-full bg-current opacity-70 transition-all duration-500 ease-out" style={{ width: `${process.progress}%` }} />
-        </span>
-      )}
-    </button>
-  );
-}
-
-// TvQueueNoticeModal removed — the inline button state ("Signing you in… please keep your TV on")
-// is enough. No global popup so users who did not submit a code never see it.
-
 function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
-
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({});
 
-  type TvAccount = { account_key?: string; imap_user: string; imap_user_masked: string; actual_imap_user_masked?: string; label: string; cookies_available: boolean };
-  const [step, setStep] = useState<"select" | "code">("select");
-  const [accounts, setAccounts] = useState<TvAccount[]>([]);
-  const [accountsLoading, setAccountsLoading] = useState(false);
-  const [accountsError, setAccountsError] = useState<string | null>(null);
-  const [chosen, setChosen] = useState<TvAccount | null>(null);
-
   const [code, setCode] = useState<string[]>(["", "", "", "", "", "", "", ""]);
-  const [status, setStatus] = useState<TvLoginStatus>("idle");
-  const [resultInfo, setResultInfo] = useState<TvRunInfo>({});
-  const [pollElapsed, setPollElapsed] = useState(0);
+  const [status, setStatus] = useState<"idle" | "verifying" | "pending">("idle");
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
-
-  const resumeActiveTvLogin = useCallback(async (): Promise<boolean> => {
-    try {
-      const res: any = await apiCall("manage-app", { action: "tv_login_active" });
-      const ev = res?.event;
-      if (!ev) return false;
-      const s = normalizeTvStatus(ev.status);
-      if (s === "idle") return false;
-      setResultInfo(tvRunInfoFromEvent(ev));
-      if (ev.code) setCode(splitTvCode(ev.code));
-      setStep("code");
-      setStatus(s);
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
 
   const placePanel = useCallback(() => {
     const rect = buttonRef.current?.getBoundingClientRect();
@@ -2388,7 +1900,7 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
     const vh = window.innerHeight;
     const isMobile = vw < 640;
     const width = isMobile ? vw - margin * 2 : Math.min(420, vw - margin * 2);
-    const estHeight = 560;
+    const estHeight = 520;
     let left: number;
     let top: number;
     if (isMobile) {
@@ -2401,85 +1913,29 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
     setPanelStyle({ left, top, width, maxHeight: `calc(100svh - ${margin * 2}px)` });
   }, []);
 
-  const loadAccounts = useCallback(async () => {
-    setAccountsLoading(true);
-    setAccountsError(null);
-    try {
-      const res: any = await apiCall("manage-app", { action: "tv_list_accounts" });
-      if (!res?.success) throw new Error(res?.error || "Failed to load accounts");
-      const list: TvAccount[] = Array.isArray(res.accounts) ? res.accounts : [];
-      // Only surface accounts that are actually usable. Never reveal readiness state to the user.
-      const usable = list.filter((a) => a?.cookies_available);
-      setAccounts(usable);
-      // If exactly one usable account, skip the picker entirely — go straight to the code step.
-      if (usable.length === 1) {
-        setChosen(usable[0]);
-        setStep((prev) => (prev === "select" ? "code" : prev));
-      } else if (usable.length === 0) {
-        setChosen(null);
-      }
-    } catch (err) {
-      setAccountsError(err instanceof Error ? err.message : "Failed to load accounts");
-    } finally {
-      setAccountsLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    window.dispatchEvent(new CustomEvent("notif:open"));
     placePanel();
-    loadAccounts();
-    resumeActiveTvLogin().then((resumed) => {
-      if (cancelled || resumed) return;
-      setStep("select");
-      setChosen(null);
-      setCode(["", "", "", "", "", "", "", ""]);
-      setStatus("idle");
-      setResultInfo({});
-    });
+    setCode(["", "", "", "", "", "", "", ""]);
+    setStatus("idle");
+    const t = setTimeout(() => inputsRef.current[0]?.focus(), 60);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     const onReposition = () => placePanel();
     window.addEventListener("keydown", onKey);
     window.addEventListener("resize", onReposition);
     window.addEventListener("scroll", onReposition, true);
     return () => {
-      cancelled = true;
-      window.dispatchEvent(new CustomEvent("notif:close"));
+      clearTimeout(t);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", onReposition);
       window.removeEventListener("scroll", onReposition, true);
     };
-  }, [open, placePanel, loadAccounts, resumeActiveTvLogin]);
-
-  useEffect(() => {
-    if (open && step === "code") {
-      const t = setTimeout(() => inputsRef.current[0]?.focus(), 60);
-      return () => clearTimeout(t);
-    }
-  }, [open, step]);
-
-  // Resume in-flight sign-in from DB after a workflow switch / reload — state
-  // must not live only in React memory or switching to Gmail loses it.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!cancelled) await resumeActiveTvLogin();
-    })();
-    return () => { cancelled = true; };
-  }, [resumeActiveTvLogin]);
+  }, [open, placePanel]);
 
   const setDigit = (i: number, v: string) => {
     const d = v.replace(/\D/g, "").slice(-1);
-    const clearPreviousCode = isTvRetryableStatus(status);
-    if (clearPreviousCode) {
-      setStatus("idle");
-      setResultInfo({});
-      setPollElapsed(0);
-    }
     setCode((prev) => {
-      const next = clearPreviousCode ? ["", "", "", "", "", "", "", ""] : [...prev];
+      const next = [...prev];
       next[i] = d;
       return next;
     });
@@ -2502,11 +1958,6 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
     const text = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 8);
     if (!text) return;
     e.preventDefault();
-    if (isTvRetryableStatus(status)) {
-      setStatus("idle");
-      setResultInfo({});
-      setPollElapsed(0);
-    }
     const arr = ["", "", "", "", "", "", "", ""];
     for (let i = 0; i < text.length; i++) arr[i] = text[i];
     setCode(arr);
@@ -2517,99 +1968,11 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
   const full = code.join("");
   const isComplete = full.length === 8;
 
-  const submit = async () => {
-    if (!isComplete || status !== "idle" || !chosen) return;
+  const submit = () => {
+    if (!isComplete || status !== "idle") return;
     setStatus("verifying");
-    setResultInfo({});
-    setTimeout(() => setStatus((s) => (s === "verifying" ? "checking" : s)), 500);
-    try {
-      const res: any = await apiCall("manage-app", { action: "tv_submit_code", code: full, imap_user: chosen.imap_user, account_key: chosen.account_key });
-      if (!res?.success) throw new Error(res?.error || "Failed to submit code");
-      setResultInfo({
-        accountLabel: res.account_label,
-        imapMasked: res.imap_user_masked,
-        eventId: res.event_id,
-        message: res.message || null,
-        createdAt: res.created_at || new Date().toISOString(),
-      });
-      if (!res.cookies_available) { setStatus("no_cookies"); return; }
-      setStatus(res.status === "queued" ? "queued" : res.status === "error" ? "error" : "in_progress");
-    } catch (err) {
-      setResultInfo({ message: err instanceof Error ? err.message : "Something went wrong" });
-      setStatus("error");
-    }
+    setTimeout(() => setStatus("pending"), 1400);
   };
-
-  // Reset code entry so the user can retry without reopening the modal.
-  const resetForRetry = useCallback(() => {
-    setCode(["", "", "", "", "", "", "", ""]);
-    setStatus("idle");
-    setResultInfo({});
-    setPollElapsed(0);
-    setTimeout(() => inputsRef.current[0]?.focus(), 40);
-  }, []);
-
-  // Poll until a real terminal result arrives. Slow queue/runner states stay active
-  // so the UI does not show fake timeout failures while the job is still running.
-  useEffect(() => {
-    const eventId = resultInfo.eventId;
-    if (!eventId) return;
-    if (!["queued", "running", "in_progress"].includes(status)) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const startedAt = resultInfo.createdAt ? new Date(resultInfo.createdAt).getTime() : Date.now();
-    setPollElapsed(0);
-    let consecutiveErrors = 0;
-
-    const tick = async () => {
-      const elapsed = Date.now() - startedAt;
-      setPollElapsed(elapsed);
-      try {
-        const res: any = await apiCall("manage-app", { action: "tv_login_status", event_id: eventId });
-        if (cancelled) return;
-        consecutiveErrors = 0;
-        const ev = res?.event;
-        if (ev) {
-          setResultInfo((prev) => ({ ...prev, ...tvRunInfoFromEvent(ev), message: ev.message || prev.message, runUrl: ev.github_run_url || prev.runUrl }));
-          const s = normalizeTvStatus(ev.status);
-          const r = String(ev.result || "");
-          if (s === "success") {
-            setStatus("success");
-            return;
-          }
-          if (r === "runner_timeout" || r === "netflix_timeout") {
-            setStatus("invalid_code");
-            setResultInfo((prev) => ({ ...prev, message: "Code rejected. Open Netflix on your TV, generate a fresh code, and try again." }));
-            return;
-          }
-          if (s === "invalid_code" || s === "cookies_expired" || s === "no_cookies" || s === "error") {
-            setStatus(s);
-            return;
-          }
-          if (s === "running" || s === "queued" || s === "in_progress") setStatus(s);
-        }
-      } catch {
-        consecutiveErrors += 1;
-        // After ~5 consecutive network failures (~10s), surface error instead of spinning forever.
-        if (consecutiveErrors >= 5 && !cancelled) {
-          setStatus("error");
-          setResultInfo((prev) => ({ ...prev, message: "Lost connection to the status service. Check your network and try again." }));
-          return;
-        }
-      }
-      if (elapsed > 11 * 60_000) {
-        setStatus("invalid_code");
-        setResultInfo((prev) => ({ ...prev, message: "Code rejected. Open Netflix on your TV, generate a fresh code, and try again." }));
-        return;
-      }
-      if (!cancelled) timer = window.setTimeout(tick, 700);
-    };
-    timer = window.setTimeout(tick, 500);
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [resultInfo.eventId, resultInfo.createdAt, status]);
-
-
-
 
   const popup = open ? createPortal(
     <div
@@ -2646,185 +2009,74 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
                 <Tv className="w-7 h-7 text-white" />
               </div>
               <div className="text-[10px] uppercase tracking-[0.2em] text-[#e50914] font-bold">Netflix • TV</div>
-              <h2 className="mt-1 text-xl sm:text-2xl font-black text-white tracking-tight">
-                {step === "select" ? "Choose your account" : "Enter your code"}
-              </h2>
+              <h2 className="mt-1 text-xl sm:text-2xl font-black text-white tracking-tight">Enter your code</h2>
               <p className="mt-1.5 text-[11.5px] sm:text-xs text-white/60 leading-relaxed max-w-[300px]">
-                {step === "select"
-                  ? "Select the account you want to sign in on your TV."
-                  : "Enter the code displayed on your TV."}
+                Enter the code displayed on your TV.
               </p>
-
-              {/* Steps indicator */}
-              {accounts.length > 1 && <div className="mt-3 inline-flex items-center gap-2 text-[10px] text-white/40">
-                <span className={`inline-flex items-center gap-1.5 ${step === "select" ? "text-white" : ""}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${step === "select" ? "bg-[#e50914]" : "bg-emerald-400"}`} />
-                  Account
-                </span>
-                <span className="w-4 h-px bg-white/15" />
-                <span className={`inline-flex items-center gap-1.5 ${step === "code" ? "text-white" : ""}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${step === "code" ? "bg-[#e50914]" : "bg-white/20"}`} />
-                  Code
-                </span>
-              </div>}
             </div>
 
-            {step === "select" ? (
-              <div className="mt-5">
-                {accountsLoading ? (
-                  <div className="py-8 flex flex-col items-center justify-center gap-2 text-white/60">
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    <div className="text-[11px]">Loading your accounts…</div>
-                  </div>
-                ) : accountsError ? (
-                  <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-3 text-center">
-                    <div className="text-[11px] font-bold text-red-300">Couldn't load accounts</div>
-                    <div className="text-[10.5px] text-red-200/80 mt-0.5">{accountsError}</div>
-                    <button
-                      onClick={loadAccounts}
-                      className="mt-2 h-8 px-3 rounded-lg text-[11px] font-bold bg-white/10 text-white hover:bg-white/15"
-                    >
-                      Retry
-                    </button>
-                  </div>
-                ) : accounts.length === 0 ? (
-                  <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-3 text-center">
-                    <div className="text-[11px] font-bold text-amber-300">TV login not enabled yet</div>
-                    <div className="text-[10.5px] text-amber-200/80 mt-0.5 leading-relaxed">Admin hasn't set up TV login for your Netflix account yet. Please check back soon.</div>
-                  </div>
+            {/* Code inputs */}
+            <div className="mt-6 flex items-center justify-center gap-1.5 sm:gap-2">
+              {code.map((d, i) => (
+                <React.Fragment key={i}>
+                  {i === 4 && (
+                    <span aria-hidden className="shrink-0 w-2 sm:w-3 h-0.5 rounded-full bg-white/25 mx-0.5" />
+                  )}
+                  <input
+                    ref={(el) => { inputsRef.current[i] = el; }}
+                    value={d}
+                    onChange={(e) => setDigit(i, e.target.value)}
+                    onKeyDown={(e) => onKeyDown(i, e)}
+                    onPaste={onPaste}
+                    onFocus={(e) => e.currentTarget.select()}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={1}
+                    disabled={status !== "idle"}
+                    aria-label={`Digit ${i + 1}`}
+                    className={`aspect-square w-full min-w-0 flex-1 text-center text-lg sm:text-2xl font-black rounded-xl bg-white/[0.04] border-2 text-white caret-[#e50914] outline-none transition-all
+                      ${d ? "border-[#e50914] bg-[#e50914]/10 shadow-[0_0_20px_-4px_rgba(229,9,20,0.6)]" : "border-white/15"}
+                      focus:border-[#e50914] focus:bg-[#e50914]/10 focus:shadow-[0_0_24px_-4px_rgba(229,9,20,0.7)] focus:scale-[1.04]
+                      disabled:opacity-60`}
+                  />
+                </React.Fragment>
+              ))}
+            </div>
 
 
+            {/* Submit */}
+            <button
+              onClick={submit}
+              disabled={!isComplete || status !== "idle"}
+              className={`mt-6 w-full h-11 rounded-xl font-bold text-sm tracking-wide transition-all active:scale-[0.98]
+                ${isComplete && status === "idle"
+                  ? "bg-gradient-to-r from-[#e50914] to-[#b0060f] text-white shadow-lg shadow-[#e50914]/30 hover:shadow-[#e50914]/50 hover:brightness-110"
+                  : "bg-white/[0.06] text-white/40 cursor-not-allowed"}`}
+            >
+              {status === "verifying" ? (
+                <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Verifying…</span>
+              ) : status === "pending" ? (
+                <span>Waiting for TV</span>
+              ) : (
+                "Continue"
+              )}
+            </button>
 
-                ) : (
-                  <div className="flex flex-col gap-2 max-h-[280px] overflow-y-auto pr-1">
-                    {accounts.map((acc) => {
-                      const selected = (chosen?.account_key || chosen?.imap_user) === (acc.account_key || acc.imap_user);
-                      return (
-                        <button
-                          key={acc.account_key || acc.imap_user}
-                          onClick={() => setChosen(acc)}
-                          className={`group w-full flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all active:scale-[0.99] ${
-                            selected
-                              ? "bg-[#e50914]/10 border-[#e50914] shadow-[0_0_20px_-4px_rgba(229,9,20,0.6)]"
-                              : "bg-white/[0.04] border-white/10 hover:bg-white/[0.07] hover:border-white/20"
-                          }`}
-                        >
-                          <div className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center ${selected ? "bg-[#e50914]/20" : "bg-white/5"}`}>
-                            <Mail className={`w-4 h-4 ${selected ? "text-[#e50914]" : "text-white/60"}`} />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[12.5px] font-bold text-white truncate tracking-tight">
-                              {acc.imap_user_masked}
-                            </div>
-                            {acc.label && (
-                              <div className="mt-0.5 text-[10px]">
-                                <span className="px-1.5 py-0.5 rounded-md bg-white/10 text-white/70 font-semibold">{acc.label}</span>
-                              </div>
-                            )}
-                          </div>
-                          <div className={`shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center ${selected ? "border-[#e50914] bg-[#e50914]" : "border-white/25"}`}>
-                            {selected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                <button
-                  onClick={() => { if (chosen) setStep("code"); }}
-                  disabled={!chosen}
-                  className={`mt-5 w-full h-11 rounded-xl font-bold text-sm tracking-wide transition-all active:scale-[0.98] ${
-                    chosen
-                      ? "bg-gradient-to-r from-[#e50914] to-[#b0060f] text-white shadow-lg shadow-[#e50914]/30 hover:shadow-[#e50914]/50 hover:brightness-110"
-                      : "bg-white/[0.06] text-white/40 cursor-not-allowed"
-                  }`}
-                >
-                  Continue
-                </button>
-
-                <div className="mt-3 flex items-center justify-center gap-1.5 text-[10.5px] text-white/40">
-                  <ShieldCheck className="w-3 h-3" />
-                  <span>Account selection is required to continue</span>
+            {/* Status / help */}
+            {status === "pending" ? (
+              <div className="mt-4 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2.5 text-center">
+                <div className="text-[11px] font-bold text-amber-300">Auto-login rolling out soon</div>
+                <div className="text-[10.5px] text-amber-200/80 mt-0.5 leading-relaxed">
+                  We've received your code. Direct TV activation is launching shortly — meanwhile, sign in on your TV using the on-screen prompt.
                 </div>
               </div>
             ) : (
-              <>
-                {/* Selected account chip */}
-                {chosen && accounts.length > 1 && (
-                  <div className="mt-4 flex items-center justify-between gap-2 rounded-xl bg-white/[0.04] border border-white/10 px-3 py-2">
-                    <div className="min-w-0 flex items-center gap-2">
-                      <Mail className="w-3.5 h-3.5 text-white/60 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-[11.5px] font-bold text-white truncate">{chosen.imap_user_masked}</div>
-                        {chosen.label && <div className="text-[9.5px] text-white/50 truncate">{chosen.label}</div>}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => { setStep("select"); setStatus("idle"); setResultInfo({}); setCode(["", "", "", "", "", "", "", ""]); }}
-                      disabled={isTvActiveStatus(status)}
-                      className="text-[10.5px] font-semibold text-[#e50914] hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      Change
-                    </button>
-                  </div>
-                )}
-
-                {/* Code inputs */}
-                <div className="mt-5 flex items-center justify-center gap-1.5 sm:gap-2">
-                  {code.map((d, i) => (
-                    <React.Fragment key={i}>
-                      {i === 4 && (
-                        <span aria-hidden className="shrink-0 w-2 sm:w-3 h-0.5 rounded-full bg-white/25 mx-0.5" />
-                      )}
-                      <input
-                        ref={(el) => { inputsRef.current[i] = el; }}
-                        value={d}
-                        onChange={(e) => setDigit(i, e.target.value)}
-                        onKeyDown={(e) => onKeyDown(i, e)}
-                        onPaste={onPaste}
-                        onFocus={(e) => e.currentTarget.select()}
-                        inputMode="numeric"
-                        autoComplete="one-time-code"
-                        maxLength={1}
-                        disabled={isTvActiveStatus(status) || status === "no_cookies" || status === "cookies_expired"}
-                        aria-label={`Digit ${i + 1}`}
-                        className={`aspect-square w-full min-w-0 flex-1 text-center text-lg sm:text-2xl font-black rounded-xl bg-white/[0.04] border-2 text-white caret-[#e50914] outline-none transition-all
-                          ${d ? "border-[#e50914] bg-[#e50914]/10 shadow-[0_0_20px_-4px_rgba(229,9,20,0.6)]" : "border-white/15"}
-                          focus:border-[#e50914] focus:bg-[#e50914]/10 focus:shadow-[0_0_24px_-4px_rgba(229,9,20,0.7)] focus:scale-[1.04]
-                          disabled:opacity-60`}
-                      />
-                    </React.Fragment>
-                  ))}
-                </div>
-
-                {/* Submit / live process / final result */}
-                <TvProcessButton
-                  status={status}
-                  elapsedMs={pollElapsed}
-                  isComplete={isComplete}
-                  message={resultInfo.message}
-                  onSubmit={submit}
-                  onRetry={resetForRetry}
-                  idleText="Start TV sign-in"
-                  theme="dark"
-                />
-
-                <TvRunDetails info={resultInfo} status={status} code={full || undefined} theme="dark" />
-
-
-                {status === "idle" && (
-                  <div className="mt-4 flex items-center justify-center gap-1.5 text-[10.5px] text-white/40">
-                    <ShieldCheck className="w-3 h-3" />
-                    <span>Encrypted • One-time code • Never shared</span>
-                  </div>
-                )}
-
-
-              </>
+              <div className="mt-4 flex items-center justify-center gap-1.5 text-[10.5px] text-white/40">
+                <ShieldCheck className="w-3 h-3" />
+                <span>Encrypted • One-time code • Never shared</span>
+              </div>
             )}
           </div>
-
         </div>
       </div>
     </div>,
@@ -2850,422 +2102,9 @@ function TvAutoLoginButton({ visible = true }: { visible?: boolean } = {}) {
 }
 
 
-// ============================================================================
-// TvSignInPage — dedicated full-page TV sign-in surface (no Gmail, inline flow)
-// Mirrors the TvAutoLoginButton popup, styled as a spacious page card.
-// ============================================================================
-function TvSignInPage() {
-  type TvAccount = { account_key?: string; imap_user: string; imap_user_masked: string; label: string; cookies_available: boolean };
-  // Persist across workflow switches so the user doesn't lose their entered
-  // code / picked account when they navigate away and come back mid-flight.
-  const DRAFT_KEY = "tv_signin_draft_v1";
-  const readDraft = () => {
-    try { return JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "{}"); } catch { return {}; }
-  };
-  const initialDraft = readDraft();
-  const [step, setStep] = useState<"select" | "code">(initialDraft.step === "code" ? "code" : "select");
-  const [accounts, setAccounts] = useState<TvAccount[]>([]);
-  const [accountsLoading, setAccountsLoading] = useState(false);
-  const [accountsError, setAccountsError] = useState<string | null>(null);
-  const [chosen, setChosen] = useState<TvAccount | null>(initialDraft.chosen || null);
-  const [code, setCode] = useState<string[]>(() => {
-    const saved = Array.isArray(initialDraft.code) ? initialDraft.code : null;
-    if (saved && saved.length === 8) return saved.map((d: any) => (typeof d === "string" ? d.slice(0, 1) : ""));
-    return ["", "", "", "", "", "", "", ""];
-  });
-  const [status, setStatus] = useState<TvLoginStatus>(() => normalizeTvStatus(initialDraft.status));
-  const [resultInfo, setResultInfo] = useState<TvRunInfo>(initialDraft.resultInfo || {});
-  const [recentRuns, setRecentRuns] = useState<any[]>([]);
-  const [pollElapsed, setPollElapsed] = useState(0);
-  const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
-
-
-  const applyAccounts = useCallback((list: TvAccount[]) => {
-    const filtered = list.filter((a) => a?.cookies_available);
-    setAccounts(filtered);
-    // Auto-select + skip account picker when exactly one usable cookie-bound account exists.
-    if (filtered.length === 1) {
-      setChosen(filtered[0]);
-      setStep((prev) => (prev === "select" ? "code" : prev));
-    } else if (filtered.length === 0) {
-      setChosen(null);
-    }
-  }, []);
-
-  const loadAccounts = useCallback(async (opts?: { background?: boolean }) => {
-    const background = !!opts?.background;
-    if (!background) setAccountsLoading(true);
-    setAccountsError(null);
-    try {
-      const res: any = await apiCall("manage-app", { action: "tv_list_accounts" });
-      if (!res?.success) throw new Error(res?.error || "Failed to load accounts");
-      const list: TvAccount[] = Array.isArray(res.accounts) ? res.accounts : [];
-      applyAccounts(list);
-      try { writeAccountsCache("tv", res); } catch {}
-    } catch (err) {
-      if (!background) setAccountsError(err instanceof Error ? err.message : "Failed to load accounts");
-    } finally {
-      if (!background) setAccountsLoading(false);
-    }
-  }, [applyAccounts]);
-
-  const loadRecentRuns = useCallback(async () => {
-    try {
-      const res: any = await apiCall("manage-app", { action: "tv_login_recent" });
-      if (Array.isArray(res?.events)) setRecentRuns(res.events);
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    // Instant paint from session cache (populated by prefetchWorkflowAccounts), then
-    // silently refresh in background so switching to TV feels immediate.
-    const cached: any = readAccountsCache("tv");
-    if (cached?.accounts) {
-      const list: TvAccount[] = Array.isArray(cached.accounts) ? cached.accounts : [];
-      applyAccounts(list);
-      setAccountsLoading(false);
-      loadAccounts({ background: true });
-    } else {
-      loadAccounts();
-    }
-    return undefined;
-  }, [loadAccounts, applyAccounts]);
-
-  useEffect(() => { loadRecentRuns(); }, [loadRecentRuns]);
-
-  useEffect(() => {
-    if (step === "code") {
-      const t = setTimeout(() => inputsRef.current[0]?.focus(), 80);
-      return () => clearTimeout(t);
-    }
-  }, [step]);
-
-  // Resume in-flight sign-in from DB (survives workflow switch / reload).
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res: any = await apiCall("manage-app", { action: "tv_login_active" });
-        if (cancelled) return;
-        const ev = res?.event;
-        if (!ev) return;
-        const s = normalizeTvStatus(ev.status);
-        if (s === "idle") return;
-        setResultInfo(tvRunInfoFromEvent(ev));
-        if (ev.code) setCode(splitTvCode(ev.code));
-        setStep("code");
-        setStatus(s);
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  const setDigit = (i: number, v: string) => {
-    const d = v.replace(/\D/g, "").slice(-1);
-    const clearPreviousCode = isTvRetryableStatus(status);
-    if (clearPreviousCode) {
-      setStatus("idle");
-      setResultInfo({});
-      setPollElapsed(0);
-    }
-    setCode((prev) => { const n = clearPreviousCode ? ["", "", "", "", "", "", "", ""] : [...prev]; n[i] = d; return n; });
-    if (d && i < 7) inputsRef.current[i + 1]?.focus();
-  };
-  const onKeyDown = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Backspace" && !code[i] && i > 0) inputsRef.current[i - 1]?.focus();
-    else if (e.key === "ArrowLeft" && i > 0) inputsRef.current[i - 1]?.focus();
-    else if (e.key === "ArrowRight" && i < 7) inputsRef.current[i + 1]?.focus();
-    else if (e.key === "Enter") submit();
-  };
-  const onPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
-    const text = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 8);
-    if (!text) return;
-    e.preventDefault();
-    if (isTvRetryableStatus(status)) {
-      setStatus("idle");
-      setResultInfo({});
-      setPollElapsed(0);
-    }
-    const arr = ["", "", "", "", "", "", "", ""];
-    for (let i = 0; i < text.length; i++) arr[i] = text[i];
-    setCode(arr);
-    inputsRef.current[Math.min(text.length, 7)]?.focus();
-  };
-
-  const full = code.join("");
-  const isComplete = full.length === 8;
-
-  const submit = async () => {
-    if (!isComplete || status !== "idle" || !chosen) return;
-    setStatus("verifying");
-    setResultInfo({});
-    setTimeout(() => setStatus((s) => (s === "verifying" ? "checking" : s)), 500);
-    try {
-      const res: any = await apiCall("manage-app", { action: "tv_submit_code", code: full, imap_user: chosen.imap_user, account_key: chosen.account_key });
-      if (!res?.success) throw new Error(res?.error || "Failed to submit code");
-      setResultInfo({ accountLabel: res.account_label, imapMasked: res.imap_user_masked, eventId: res.event_id, message: res.message || null, createdAt: res.created_at || new Date().toISOString() });
-      if (!res.cookies_available) { setStatus("no_cookies"); return; }
-      setStatus(res.status === "queued" ? "queued" : res.status === "error" ? "error" : "in_progress");
-      void loadRecentRuns();
-    } catch (err) {
-      setResultInfo({ message: err instanceof Error ? err.message : "Something went wrong" });
-      setStatus("error");
-    }
-  };
-
-  const resetForRetry = useCallback(() => {
-    setCode(["", "", "", "", "", "", "", ""]);
-    setStatus("idle");
-    setResultInfo({});
-    setPollElapsed(0);
-    try { sessionStorage.removeItem(DRAFT_KEY); } catch {}
-    setTimeout(() => inputsRef.current[0]?.focus(), 40);
-  }, []);
-
-  // Persist draft (step + chosen + code) so a workflow switch doesn't wipe it.
-  useEffect(() => {
-    try {
-      sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ step, chosen, code, status, resultInfo }));
-    } catch {}
-  }, [step, chosen, code, status, resultInfo]);
-
-
-
-  useEffect(() => {
-    const eventId = resultInfo.eventId;
-    if (!eventId) return;
-    if (!["queued", "running", "in_progress"].includes(status)) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const startedAt = resultInfo.createdAt ? new Date(resultInfo.createdAt).getTime() : Date.now();
-    setPollElapsed(0);
-    let consecutiveErrors = 0;
-    const tick = async () => {
-      const elapsed = Date.now() - startedAt;
-      setPollElapsed(elapsed);
-      try {
-        const res: any = await apiCall("manage-app", { action: "tv_login_status", event_id: eventId });
-        if (cancelled) return;
-        consecutiveErrors = 0;
-        const ev = res?.event;
-        if (ev) {
-          setResultInfo((p) => ({ ...p, ...tvRunInfoFromEvent(ev), message: ev.message || p.message, runUrl: ev.github_run_url || p.runUrl }));
-          const s = normalizeTvStatus(ev.status);
-          const r = String(ev.result || "");
-          if (s === "success") {
-            setStatus("success");
-            void loadRecentRuns();
-            return;
-          }
-          if (r === "runner_timeout" || r === "netflix_timeout") { setStatus("invalid_code"); setResultInfo((p) => ({ ...p, message: "Code rejected. Open Netflix on your TV, generate a fresh code, and try again." })); void loadRecentRuns(); return; }
-          if (s === "invalid_code" || s === "cookies_expired" || s === "no_cookies" || s === "error") { setStatus(s); void loadRecentRuns(); return; }
-          if (s === "running" || s === "queued" || s === "in_progress") setStatus(s);
-        }
-      } catch {
-        consecutiveErrors += 1;
-        if (consecutiveErrors >= 5 && !cancelled) {
-          setStatus("error");
-          setResultInfo((p) => ({ ...p, message: "Lost connection to the status service. Check your network and try again." }));
-          return;
-        }
-      }
-      if (elapsed > 11 * 60_000) {
-        setStatus("invalid_code");
-        setResultInfo((p) => ({ ...p, message: "Code rejected. Open Netflix on your TV, generate a fresh code, and try again." }));
-        return;
-      }
-      if (!cancelled) timer = window.setTimeout(tick, 700);
-    };
-    timer = window.setTimeout(tick, 500);
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [resultInfo.eventId, resultInfo.createdAt, status, loadRecentRuns]);
-
-  return (
-    <div className="min-h-[calc(100vh-4rem)] px-3 sm:px-6 pt-8 sm:pt-12 xl:pt-16 pb-32 sm:pb-36 bg-gradient-to-b from-white via-rose-50/40 to-white">
-      <div className="max-w-2xl xl:max-w-4xl 2xl:max-w-5xl mx-auto">
-        {/* Hero */}
-        <div className="text-center mb-8 xl:mb-10">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-50 border border-rose-100 text-[10px] xl:text-xs font-bold uppercase tracking-[0.22em] text-rose-600">
-            <Tv className="w-3 h-3" /> Netflix · TV Sign-in
-          </div>
-          <h1 className="mt-3 text-3xl sm:text-4xl xl:text-5xl 2xl:text-6xl font-black text-slate-900 tracking-tight">
-            {step === "select" ? "Choose your account" : "Enter the 8-digit code"}
-          </h1>
-          <p className="mt-2 text-sm xl:text-base 2xl:text-lg text-slate-500 max-w-xl mx-auto">
-            {step === "select"
-              ? "Pick the Netflix account you want to sign in on your TV. We'll handle the rest in under 10 seconds."
-              : "Type the code shown on your Netflix TV screen. We'll auto-sign in and confirm here."}
-          </p>
-          {/* Stepper — hidden for single-account users */}
-          {accounts.length > 1 && (
-          <div className="mt-5 inline-flex items-center gap-3 text-[11px] xl:text-xs font-bold uppercase tracking-widest">
-            <span className={`inline-flex items-center gap-1.5 ${step === "select" ? "text-rose-600" : "text-emerald-600"}`}>
-              <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] ${step === "select" ? "bg-rose-600 text-white" : "bg-emerald-500 text-white"}`}>1</span>
-              Account
-            </span>
-            <span className="w-10 h-px bg-slate-200" />
-            <span className={`inline-flex items-center gap-1.5 ${step === "code" ? "text-rose-600" : "text-slate-400"}`}>
-              <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] ${step === "code" ? "bg-rose-600 text-white" : "bg-slate-200 text-slate-500"}`}>2</span>
-              Code
-            </span>
-          </div>
-          )}
-        </div>
-
-        {/* Card */}
-        <div className="relative rounded-3xl bg-white border border-slate-200 shadow-[0_25px_60px_-25px_rgba(2,6,23,0.15)] overflow-hidden">
-          <div aria-hidden className="pointer-events-none absolute -top-24 -right-16 w-64 h-64 xl:w-96 xl:h-96 rounded-full bg-rose-500/[0.06] blur-3xl" />
-          <div aria-hidden className="pointer-events-none absolute -bottom-32 -left-16 w-72 h-72 xl:w-[26rem] xl:h-[26rem] rounded-full bg-rose-500/[0.04] blur-3xl" />
-
-          <div className="relative p-3 sm:p-10 xl:p-14">
-            {step === "select" ? (
-              <div>
-                {accountsLoading ? (
-                  <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-500">
-                    <Loader2 className="w-6 h-6 animate-spin text-rose-500" />
-                    <div className="text-xs">Loading your accounts…</div>
-                  </div>
-                ) : accountsError ? (
-                  <div className="rounded-2xl bg-red-50 border border-red-200 px-4 py-4 text-center">
-                    <div className="text-xs font-bold text-red-700">Couldn't load accounts</div>
-                    <div className="text-[11px] text-red-600/80 mt-1">{accountsError}</div>
-                    <button onClick={() => loadAccounts()} className="mt-2 h-8 px-3 rounded-lg text-[11px] font-bold bg-red-600 text-white hover:bg-red-700">Retry</button>
-                  </div>
-                ) : accounts.length === 0 ? (
-                  <div className="rounded-2xl bg-amber-50 border border-amber-200 px-4 py-6 text-center">
-                    <div className="text-sm font-bold text-amber-800">TV login not enabled yet</div>
-                    <div className="text-[12px] text-amber-700/90 mt-1 leading-relaxed">Admin hasn't set up TV login for your Netflix account yet. Please check back soon.</div>
-                  </div>
-                ) : (
-                  <div className="grid gap-2.5 max-h-[360px] xl:max-h-[520px] overflow-y-auto pr-1">
-                    {accounts.map((acc) => {
-                      const selected = (chosen?.account_key || chosen?.imap_user) === (acc.account_key || acc.imap_user);
-                      return (
-                        <button key={acc.account_key || acc.imap_user}
-                          onClick={() => setChosen(acc)}
-                          className={`group w-full flex items-center gap-3 rounded-2xl border-2 px-4 py-3.5 xl:py-4 text-left transition-all active:scale-[0.99] ${
-                            selected
-                              ? "bg-rose-50 border-rose-500 shadow-[0_10px_30px_-12px_rgba(229,9,20,0.35)]"
-                              : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50"
-                          }`}>
-                          <div className={`shrink-0 w-11 h-11 xl:w-12 xl:h-12 rounded-xl flex items-center justify-center ${selected ? "bg-rose-100 text-rose-600" : "bg-slate-100 text-slate-500"}`}>
-                            <Mail className="w-5 h-5" />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="text-sm xl:text-base font-bold text-slate-900 truncate tracking-tight">{acc.imap_user_masked}</div>
-                            {acc.label && (
-                              <div className="mt-1 text-[11px] inline-block px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-semibold">{acc.label}</div>
-                            )}
-                          </div>
-                          <div className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${selected ? "border-rose-500 bg-rose-500" : "border-slate-300"}`}>
-                            {selected && <span className="w-2 h-2 rounded-full bg-white" />}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                <button onClick={() => { if (chosen) setStep("code"); }}
-                  disabled={!chosen}
-                  className={`mt-6 w-full h-12 xl:h-14 rounded-xl xl:rounded-2xl font-black text-sm xl:text-base tracking-wide transition-all active:scale-[0.98] ${
-                    chosen
-                      ? "bg-gradient-to-r from-rose-600 to-red-600 text-white shadow-lg shadow-rose-600/25 hover:shadow-rose-600/40 hover:brightness-110"
-                      : "bg-slate-100 text-slate-400 cursor-not-allowed"
-                  }`}>
-                  Continue →
-                </button>
-                <div className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
-                  <ShieldCheck className="w-3 h-3" />
-                  <span>Account selection is required to continue</span>
-                </div>
-              </div>
-            ) : (
-              <div>
-                {chosen && accounts.length > 1 && (
-                  <div className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 border border-slate-200 px-4 py-3">
-                    <div className="min-w-0 flex items-center gap-2.5">
-                      <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center">
-                        <Mail className="w-4 h-4 text-slate-500" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-sm font-bold text-slate-900 truncate">{chosen.imap_user_masked}</div>
-                        {chosen.label && <div className="text-[11px] text-slate-500 truncate">{chosen.label}</div>}
-                      </div>
-                    </div>
-                    <button onClick={() => { setStep("select"); setStatus("idle"); setResultInfo({}); setCode(["", "", "", "", "", "", "", ""]); }}
-                      disabled={isTvActiveStatus(status)}
-                      className="shrink-0 text-[11px] font-bold text-rose-600 hover:text-rose-700 transition disabled:opacity-40 disabled:cursor-not-allowed">
-                      Change
-                    </button>
-                  </div>
-                )}
-
-                <div className="mt-10 sm:mt-8 flex items-stretch justify-center gap-1.5 sm:gap-2">
-                  {code.map((d, i) => (
-                    <React.Fragment key={i}>
-                      {i === 4 && <span aria-hidden className="self-center shrink-0 w-1.5 sm:w-3 h-0.5 rounded-full bg-slate-300 mx-0 sm:mx-0.5" />}
-                      <input
-                        ref={(el) => { inputsRef.current[i] = el; }}
-                        value={d}
-                        onChange={(e) => setDigit(i, e.target.value)}
-                        onKeyDown={(e) => onKeyDown(i, e)}
-                        onPaste={onPaste}
-                        onFocus={(e) => e.currentTarget.select()}
-                        inputMode="numeric"
-                        autoComplete="one-time-code"
-                        maxLength={1}
-                        disabled={isTvActiveStatus(status) || status === "no_cookies" || status === "cookies_expired"}
-                        aria-label={`Digit ${i + 1}`}
-                        className={`aspect-square w-full min-w-0 flex-1 text-center text-2xl sm:text-3xl xl:text-5xl 2xl:text-6xl font-black rounded-xl sm:rounded-2xl bg-white border-2 text-slate-900 caret-rose-500 outline-none transition-all
-                          ${d ? "border-rose-500 bg-rose-50 shadow-[0_8px_24px_-8px_rgba(229,9,20,0.4)]" : "border-slate-200"}
-                          focus:border-rose-500 focus:bg-rose-50 focus:shadow-[0_8px_24px_-8px_rgba(229,9,20,0.5)] focus:scale-[1.04]
-                          disabled:opacity-60 disabled:bg-slate-50`}
-                      />
-                    </React.Fragment>
-                  ))}
-                </div>
-
-
-                <TvProcessButton
-                  status={status}
-                  elapsedMs={pollElapsed}
-                  isComplete={isComplete}
-                  message={resultInfo.message}
-                  onSubmit={submit}
-                  onRetry={resetForRetry}
-                  idleText="Sign in on TV"
-                  theme="light"
-                />
-
-                <TvRunDetails info={resultInfo} status={status} code={full || undefined} theme="light" />
-
-                {status === "idle" && (
-                  <div className="mt-4 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
-                    <ShieldCheck className="w-3 h-3" />
-                    <span>Encrypted · One-time code · Never shared</span>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <TvRecentRuns events={recentRuns} onRefresh={loadRecentRuns} />
-      </div>
-    </div>
-  );
-}
-
-
-
-
 function SessionCountdown({ role }: { role: "admin" | "user" }) {
-  const [minutes, setMinutes] = useState<number>(() => DEFAULT_SESSION_TIMEOUT_MINUTES[role]);
-  const [remainingMs, setRemainingMs] = useState<number>(() => {
-    ensureSessionStarted();
-    return Math.max(0, getSessionDeadline(role) - Date.now());
-  });
+  const [minutes, setMinutes] = useState<number>(0);
+  const [remainingMs, setRemainingMs] = useState<number>(0);
   const warnedRef = useRef(false);
 
   useEffect(() => {
@@ -3274,18 +2113,19 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
       try {
         const res = await apiCall("manage-app", { action: "get_settings", key: SESSION_CONFIG_KEY_FOR(role) });
         const m = Number(res?.value?.timeoutMinutes) || 0;
-        if (!cancelled && m > 0) setMinutes(m);
+        if (!cancelled) setMinutes(m);
       } catch {}
     })();
     return () => { cancelled = true; };
   }, [role]);
 
   useEffect(() => {
+    if (!minutes || minutes <= 0) return;
     warnedRef.current = false;
     const tick = () => {
-      ensureSessionStarted();
-      const deadline = getSessionDeadline(role, minutes);
-      const rem = deadline ? deadline - Date.now() : 0;
+      const started = Number(sessionGet("session_started_at" as any) || "0");
+      if (!started) { setRemainingMs(0); return; }
+      const rem = started + minutes * 60_000 - Date.now();
       setRemainingMs(Math.max(0, rem));
       if (rem > 0 && rem <= 60_000 && !warnedRef.current) {
         warnedRef.current = true;
@@ -3300,10 +2140,22 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [role, minutes]);
+  }, [minutes]);
 
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    const onOpen = () => setHidden(true);
+    const onClose = () => setHidden(false);
+    window.addEventListener("notif:open", onOpen);
+    window.addEventListener("notif:close", onClose);
+    return () => {
+      window.removeEventListener("notif:open", onOpen);
+      window.removeEventListener("notif:close", onClose);
+    };
+  }, []);
   const [showInfo, setShowInfo] = useState(false);
-  if (remainingMs <= 0) return null;
+  if (hidden) return null;
+  if (!minutes || minutes <= 0 || remainingMs <= 0) return null;
 
   const totalSec = Math.ceil(remainingMs / 1000);
   const mm = Math.floor(totalSec / 60);
@@ -3317,9 +2169,8 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
     ? "bg-amber-500 text-white"
     : "bg-slate-900/90 text-white";
 
-  const deadline = getSessionDeadline(role, minutes);
-  const endsAt = deadline ? new Date(deadline).toLocaleString() : "—";
-  const totalMinutes = getSessionTotalMinutes(role, minutes);
+  const started = Number(sessionGet("session_started_at" as any) || "0");
+  const endsAt = started ? new Date(started + minutes * 60_000).toLocaleString() : "—";
 
   // Keep the session pill bottom-right on both mobile and desktop.
   return (
@@ -3328,7 +2179,7 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
         type="button"
         onClick={() => setShowInfo((v) => !v)}
         title="Tap for details"
-        className={`fixed z-[10001] right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:bottom-4 h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition`}
+        className={`fixed z-40 right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:bottom-4 h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition`}
       >
         <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
         {role === "admin" ? "Admin" : "Session"}: {pad(mm)}:{pad(ss)}
@@ -3336,45 +2187,35 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
 
       {showInfo && createPortal(
         <div
-          className="fixed inset-0 z-[10002] bg-slate-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-[80] animate-in fade-in duration-150"
           onClick={() => setShowInfo(false)}
           role="dialog"
           aria-modal="true"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full sm:w-auto sm:min-w-[22rem] sm:max-w-md max-h-[92dvh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200 p-5 sm:p-6 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] sm:pb-6 animate-in slide-in-from-bottom-4 sm:zoom-in-95 sm:slide-in-from-bottom-0 duration-200"
+            className="absolute right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+2.25rem)] sm:bottom-[calc(1rem+2.5rem)] w-[min(20rem,calc(100vw-1.5rem))] max-h-[calc(100svh-6rem)] overflow-y-auto rounded-2xl bg-white shadow-2xl border border-slate-200 p-5 animate-in zoom-in-95 slide-in-from-bottom-2 duration-150 origin-bottom-right"
           >
-            <div aria-hidden className="sm:hidden flex justify-center -mt-1 mb-3">
-              <div className="w-10 h-1 rounded-full bg-slate-300" />
-            </div>
-            <div className="flex items-center gap-3 mb-4">
-              <div className={`w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 ${urgent ? "bg-red-100 text-red-600" : warn ? "bg-amber-100 text-amber-600" : "bg-slate-100 text-slate-700"}`}>
+            <div className="flex items-center gap-2 mb-3">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${urgent ? "bg-red-100 text-red-600" : warn ? "bg-amber-100 text-amber-600" : "bg-slate-100 text-slate-700"}`}>
                 <Clock className="w-5 h-5" />
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-base font-extrabold text-slate-900 leading-tight">{role === "admin" ? "Admin session" : "Session timer"}</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Auto sign-out countdown</div>
+              <div className="min-w-0">
+                <div className="text-sm font-extrabold text-slate-900 leading-tight">{role === "admin" ? "Admin session" : "Session timer"}</div>
+                <div className="text-[10px] text-slate-500">Auto sign-out countdown</div>
               </div>
-              <button
-                onClick={() => setShowInfo(false)}
-                aria-label="Close"
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600 transition-colors flex-shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
             </div>
-            <p className="text-sm text-slate-700 leading-relaxed">
+            <p className="text-xs text-slate-700 leading-relaxed">
               You&apos;ll be <span className="font-bold">signed out automatically</span> when the timer hits zero. Sign in again to continue.
             </p>
-            <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
-              <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500 font-bold">Signs out at</div>
-              <div className="text-sm font-semibold text-slate-900 mt-1 break-words">{endsAt}</div>
-              <div className="text-[11px] text-slate-500 mt-2">Remaining: <span className="font-bold text-slate-800 tabular-nums">{pad(mm)}:{pad(ss)}</span> · Total: {totalMinutes}m</div>
+            <div className="mt-3 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-bold">Signs out at</div>
+              <div className="text-xs font-semibold text-slate-900">{endsAt}</div>
+              <div className="text-[10px] text-slate-500 mt-1">Remaining: <span className="font-bold text-slate-800">{pad(mm)}:{pad(ss)}</span> · Total: {minutes}m</div>
             </div>
             <button
               onClick={() => setShowInfo(false)}
-              className="mt-5 w-full h-11 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.98] transition"
+              className="mt-4 w-full h-9 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 active:scale-[0.98] transition"
             >
               Got it
             </button>
@@ -3389,20 +2230,32 @@ function SessionCountdown({ role }: { role: "admin" | "user" }) {
 
 // --- Free profile expiry pill (auto-deletion notice) ---
 // Matches SessionCountdown style; sits directly above the session pill (bottom-right).
-function FreeExpiryPill({ userOverride }: { userOverride?: any } = {}) {
-  const { user: authUser } = useAuth();
-  const user = userOverride || authUser;
+function FreeExpiryPill() {
+  const { user } = useAuth();
   const [now, setNow] = useState<number>(() => Date.now());
   const [showInfo, setShowInfo] = useState(false);
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    const onOpen = () => setHidden(true);
+    const onClose = () => setHidden(false);
+    window.addEventListener("notif:open", onOpen);
+    window.addEventListener("notif:close", onClose);
+    return () => {
+      window.removeEventListener("notif:open", onOpen);
+      window.removeEventListener("notif:close", onClose);
+    };
+  }, []);
+
   const isFree = !!(user as any)?.isFree;
   const expIso = (user as any)?.expiresAt as string | null | undefined;
   const autoDelete = (user as any)?.autoDelete !== false;
 
 
+  if (hidden) return null;
   if (!isFree || !expIso || !autoDelete) return null;
   const expMs = Date.parse(expIso);
   if (!Number.isFinite(expMs)) return null;
@@ -3434,187 +2287,49 @@ function FreeExpiryPill({ userOverride }: { userOverride?: any } = {}) {
         type="button"
         onClick={() => setShowInfo((v) => !v)}
         title="Tap for details"
-        className={`fixed z-[10001] right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+2.25rem)] sm:bottom-[calc(1rem+2.5rem)] h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition`}
+        className={`fixed z-40 right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+2.25rem)] sm:bottom-[calc(1rem+2.5rem)] h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition`}
       >
         <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
         Deletes in: {label}
       </button>
 
-      {showInfo && createPortal(
+      {showInfo && (
         <div
-          className="fixed inset-0 z-[10002] bg-slate-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-[80] animate-in fade-in duration-150"
           onClick={() => setShowInfo(false)}
           role="dialog"
           aria-modal="true"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full sm:w-auto sm:min-w-[22rem] sm:max-w-md max-h-[92dvh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200 p-5 sm:p-6 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] sm:pb-6 animate-in slide-in-from-bottom-4 sm:zoom-in-95 sm:slide-in-from-bottom-0 duration-200"
+            className="absolute right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+4.5rem)] sm:bottom-[calc(1rem+5rem)] w-[min(20rem,calc(100vw-1.5rem))] max-h-[calc(100svh-8rem)] overflow-y-auto rounded-2xl bg-white shadow-2xl border border-slate-200 p-5 animate-in zoom-in-95 slide-in-from-bottom-2 duration-150 origin-bottom-right"
           >
-            <div aria-hidden className="sm:hidden flex justify-center -mt-1 mb-3">
-              <div className="w-10 h-1 rounded-full bg-slate-300" />
-            </div>
-            <div className="flex items-center gap-3 mb-4">
-              <div className={`w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 ${urgent ? "bg-red-100 text-red-600" : warn ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}>
+
+            <div className="flex items-center gap-2 mb-3">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${urgent ? "bg-red-100 text-red-600" : warn ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}>
                 <Clock className="w-5 h-5" />
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-base font-extrabold text-slate-900 leading-tight">Free profile auto-delete</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Countdown to deletion</div>
+              <div className="min-w-0">
+                <div className="text-sm font-extrabold text-slate-900 leading-tight">Free profile auto-delete</div>
+                <div className="text-[10px] text-slate-500">Countdown to deletion</div>
               </div>
-              <button
-                onClick={() => setShowInfo(false)}
-                aria-label="Close"
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600 transition-colors flex-shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
             </div>
-            <p className="text-sm text-slate-700 leading-relaxed">
+            <p className="text-xs text-slate-700 leading-relaxed">
               This is a free profile. It will be <span className="font-bold">automatically deleted</span> when the timer hits zero.
             </p>
-            <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
-              <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500 font-bold">Deletes on</div>
-              <div className="text-sm font-semibold text-slate-900 mt-1 break-words">{full}</div>
-              <div className="text-[11px] text-slate-500 mt-2">Remaining: <span className="font-bold text-slate-800">{label}</span></div>
+            <div className="mt-3 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-bold">Deletes on</div>
+              <div className="text-xs font-semibold text-slate-900">{full}</div>
+              <div className="text-[10px] text-slate-500 mt-1">Remaining: <span className="font-bold text-slate-800">{label}</span></div>
             </div>
             <button
               onClick={() => setShowInfo(false)}
-              className="mt-5 w-full h-11 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.98] transition"
+              className="mt-4 w-full h-9 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 active:scale-[0.98] transition"
             >
               Got it
             </button>
           </div>
-        </div>,
-        document.body,
-      )}
-    </>
-  );
-}
-
-
-// --- Paid user plan-end countdown pill (mirror of FreeExpiryPill styling) ---
-function PlanEndsPill({ userOverride }: { userOverride?: any } = {}) {
-  const { user: authUser } = useAuth();
-  const user = userOverride || authUser;
-  const [now, setNow] = useState<number>(() => Date.now());
-  const [showInfo, setShowInfo] = useState(false);
-  const expiredNoticeRef = useRef(false);
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  const isFree = !!(user as any)?.isFree;
-  const role = (user as any)?.role;
-  const endIso = ((user as any)?.planEndsAt || (user as any)?.plan_ends_at) as string | null | undefined;
-  // Show only for paid non-admin users with a set plan end date.
-  if (isFree || role === "admin" || !endIso) return null;
-  const endMs = Date.parse(endIso);
-  if (!Number.isFinite(endMs)) return null;
-  const rem = endMs - now;
-  if (rem <= 0) {
-    if (!expiredNoticeRef.current) {
-      expiredNoticeRef.current = true;
-      // Ask the server to confirm expiry. When it returns
-      // { error: "plan_finished", contactInfo, planEndsAt } the global
-      // apiCall interceptor dispatches app:plan-finished with the full
-      // payload. We do NOT dispatch a bare event here — that used to
-      // race the server response and flicker the modal between
-      // "with contacts" and "no contacts" states.
-      apiCall("manage-app", { action: "me" }).catch(() => {
-        // Offline / server unreachable → surface the popup anyway so
-        // the user isn't stuck on a dead timer. Contacts merge in
-        // later if the server call succeeds on retry.
-        try {
-          window.dispatchEvent(new CustomEvent("app:plan-finished", { detail: { planEndsAt: endIso } }));
-        } catch {}
-      });
-    }
-    return null;
-  }
-
-  const totalSec = Math.floor(rem / 1000);
-  const days = Math.floor(totalSec / 86400);
-  const hrs = Math.floor((totalSec % 86400) / 3600);
-  const mins = Math.floor((totalSec % 3600) / 60);
-  const secs = totalSec % 60;
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  const label = days >= 1 ? `${days}d ${pad(hrs)}:${pad(mins)}:${pad(secs)}` : `${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
-
-  // Compact label so the pill matches Session pill footprint on mobile.
-  const shortLabel = days >= 1
-    ? `${days}d ${pad(hrs)}h`
-    : (hrs >= 1 ? `${pad(hrs)}:${pad(mins)}:${pad(secs)}` : `${pad(mins)}:${pad(secs)}`);
-  const urgent = rem <= 10 * 60_000;
-  const warn = !urgent && rem <= 60 * 60_000;
-  const cls = urgent
-    ? "bg-red-500 text-white animate-pulse ring-2 ring-red-300"
-    : warn
-    ? "bg-amber-500 text-white"
-    : "bg-indigo-600/90 text-white";
-  const full = new Date(endMs).toLocaleString();
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setShowInfo((v) => !v)}
-        title={`Plan ends ${full}`}
-        aria-label={`Plan ends in ${label}`}
-        className={`fixed z-[10001] right-3 sm:right-4 bottom-[calc(env(safe-area-inset-bottom)+0.75rem+2.75rem)] sm:bottom-[calc(1rem+3rem)] h-7 sm:h-8 px-3 sm:px-3.5 rounded-full text-[11px] sm:text-xs font-semibold shadow-lg backdrop-blur ${cls} flex items-center gap-1.5 select-none active:scale-95 transition tabular-nums`}
-      >
-        <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
-        Plan: {label}
-      </button>
-
-      {showInfo && createPortal(
-        <div
-          className="fixed inset-0 z-[10002] bg-slate-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
-          onClick={() => setShowInfo(false)}
-          role="dialog"
-          aria-modal="true"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="relative w-full sm:w-auto sm:min-w-[22rem] sm:max-w-md max-h-[92dvh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200 p-5 sm:p-6 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] sm:pb-6"
-          >
-            <div aria-hidden className="sm:hidden flex justify-center -mt-1 mb-3">
-              <div className="w-10 h-1 rounded-full bg-slate-300" />
-            </div>
-            <div className="flex items-center gap-3 mb-4">
-              <div className={`w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 ${urgent ? "bg-red-100 text-red-600" : warn ? "bg-amber-100 text-amber-600" : "bg-indigo-100 text-indigo-600"}`}>
-                <Clock className="w-5 h-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-base font-extrabold text-slate-900 leading-tight">Your plan</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Time remaining</div>
-              </div>
-              <button
-                onClick={() => setShowInfo(false)}
-                aria-label="Close"
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600 flex-shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-sm text-slate-700 leading-relaxed">
-              After your plan ends, sign-in features will be paused. Contact the admin to renew.
-            </p>
-            <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
-              <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500 font-bold">Ends on</div>
-              <div className="text-sm font-semibold text-slate-900 mt-1 break-words">{full}</div>
-              <div className="text-[11px] text-slate-500 mt-2">Remaining: <span className="font-bold text-slate-800">{label}</span></div>
-            </div>
-            <button
-              onClick={() => setShowInfo(false)}
-              className="mt-5 w-full h-11 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.98] transition"
-            >
-              Got it
-            </button>
-          </div>
-        </div>,
-        document.body,
+        </div>
       )}
     </>
   );
@@ -3622,6 +2337,7 @@ function PlanEndsPill({ userOverride }: { userOverride?: any } = {}) {
 
 
 
+// --- Types ---
 interface Email {
   id: string; subject: string; from: string; to?: string; date: string; otp: string | null; preview: string; html: string; account_label?: string | null; cached_at?: string | null; destroyed?: boolean;
 }
@@ -3771,9 +2487,7 @@ function sanitizeEmailHtmlFragment(input = "", preview = "") {
 
   try {
     const doc = new DOMParser().parseFromString(raw, "text/html");
-    // Keep the email's own <style> and inline styles so the original message
-    // renders like the sender designed it. Only strip executable/embedding tags.
-    doc.querySelectorAll("script, noscript, meta, title, base, object, embed, iframe").forEach((el) => el.remove());
+    doc.querySelectorAll("script, style, noscript, meta, link, title, base, object, embed, iframe").forEach((el) => el.remove());
     stripVisibleCssTextNodes(doc);
     doc.querySelectorAll("*").forEach((el) => {
       Array.from(el.attributes).forEach((attr) => {
@@ -3787,11 +2501,8 @@ function sanitizeEmailHtmlFragment(input = "", preview = "") {
         el.setAttribute("rel", "noopener noreferrer");
       }
     });
-    const headStyles = Array.from(doc.head?.querySelectorAll("style") || [])
-      .map((el) => el.outerHTML)
-      .join("\n");
     const bodyHtml = (doc.body?.innerHTML || "").trim();
-    if (bodyHtml) return `${headStyles}${bodyHtml}`;
+    if (bodyHtml) return bodyHtml;
   } catch {}
 
   const cleaned = stripRawMimeNoise(decodeQuotedPrintableText(raw));
@@ -3820,101 +2531,13 @@ function normalizeEmailHtmlForDisplay(rawHtml = "", preview = "") {
 
 function emailHtmlForDisplay(email: Email | null) {
   if (!email) return "";
-  return normalizeEmailHtmlForDisplay(String(email.html || ""), String((email as any).preview || (email as any).snippet || ""));
+  return String(email.html || "");
 }
-
-// Global listener: resize email iframes from their own measured content height.
-// Uses a per-iframe id fallback so sandboxed windows do not miss the match.
-if (typeof window !== "undefined" && !(window as any).__emailIframeResizeInstalled) {
-  (window as any).__emailIframeResizeInstalled = true;
-  window.addEventListener("message", (ev: MessageEvent) => {
-    const data: any = ev?.data;
-    if (!data || typeof data !== "object") return;
-    const h = Number(data.__emailIframeHeight);
-    if (!h || h < 40) return;
-    const frameId = typeof data.__emailIframeId === "string" ? data.__emailIframeId : "";
-    const iframes = document.querySelectorAll<HTMLIFrameElement>('iframe[data-email-iframe="true"]');
-    iframes.forEach((f) => {
-      const sourceMatches = f.contentWindow === ev.source;
-      const idMatches = frameId && f.dataset.emailIframeId === frameId;
-      if (!sourceMatches && !idMatches) return;
-      const next = Math.ceil(Math.min(Math.max(h + 12, 220), 12000));
-      const current = parseFloat(f.style.height || "0");
-      if (!current || Math.abs(current - next) > 6) f.style.height = next + "px";
-    });
-  });
-}
-
-function responsiveEmailSrcDoc(email: Email | null) {
-  const html = emailHtmlForDisplay(email);
-  const iframeId = String((email as any)?.id || "email-preview").replace(/[^a-zA-Z0-9_-]/g, "_");
-
-  return `<!DOCTYPE html><html><head><base target="_blank"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><style>
-    html,body{margin:0!important;padding:0!important;width:100%!important;min-width:0!important;height:auto!important;min-height:0!important;overflow:hidden!important;-webkit-text-size-adjust:100%;text-size-adjust:100%;background:#fff;}
-    body{font-family:Arial,Helvetica,sans-serif;color:#221f1f;}
-    #email-root{display:block!important;width:100%!important;min-width:0!important;height:auto!important;overflow:visible!important;transform-origin:top left;}
-    img{max-width:100%;height:auto;}
-    pre{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;}
-    a{word-break:break-word;overflow-wrap:anywhere;}
-  </style></head><body><div id="email-root">${html}</div><script>(function(){
-    var iframeId=${JSON.stringify(iframeId)};
-    var scale=1;
-    function fit(){try{
-      var root=document.getElementById('email-root')||document.body;
-      root.style.transform='none';root.style.width='auto';
-      var vw=Math.max(1,document.documentElement.clientWidth||window.innerWidth||320);
-      var natural=Math.max(root.scrollWidth||0,document.body.scrollWidth||0,document.documentElement.scrollWidth||0,vw);
-      scale=Math.min(1,vw/natural);
-      root.style.transform='scale('+scale+')';
-      root.style.width=(100/scale)+'%';
-      document.documentElement.style.overflow='hidden';document.body.style.overflow='hidden';
-    }catch(e){scale=1;}}
-    function measureContentHeight(){try{
-      var root=document.getElementById('email-root')||document.body;
-      var rootRect=root.getBoundingClientRect();
-      var max=Math.ceil(rootRect.height||root.scrollHeight||0);
-      root.querySelectorAll('*').forEach(function(el){
-        var r=el.getBoundingClientRect();
-        var bottom=Math.ceil(r.bottom-rootRect.top);
-        if(bottom>max&&bottom<20000)max=bottom;
-      });
-      return Math.max(40,max+2);
-    }catch(e){return Math.max(40,document.body.scrollHeight||document.documentElement.scrollHeight||0);}}
-    var lastH=0,pendingH=0;
-    function postH(){try{
-      var h=measureContentHeight();
-      if(h&&Math.abs(h-lastH)>8){lastH=h;parent.postMessage({__emailIframeHeight:h,__emailIframeId:iframeId},'*');}
-    }catch(e){}}
-    function schedulePostH(){if(pendingH)return;pendingH=1;requestAnimationFrame(function(){pendingH=0;postH();});}
-    function tick(){fit();schedulePostH();}
-    function force(a){try{a.setAttribute('target','_blank');a.setAttribute('rel','noopener noreferrer');}catch(e){}}
-    function scanLinks(){document.querySelectorAll('a,button').forEach(force);}
-    document.addEventListener('click',function(e){var a=e.target.closest('a,button');if(!a)return;var href=a.getAttribute('href')||a.dataset.href;if(href){e.preventDefault();window.open(href,'_blank','noopener,noreferrer');}},true);
-    document.addEventListener('contextmenu',function(e){e.preventDefault();});
-    window.addEventListener('load',tick);
-    window.addEventListener('resize',tick);
-    document.querySelectorAll('img').forEach(function(img){img.addEventListener('load',tick);img.addEventListener('error',tick);});
-    scanLinks();tick();[50,200,500,1000,2000].forEach(function(t){setTimeout(tick,t);});
-    try{new MutationObserver(function(){scanLinks();schedulePostH();}).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['href','target']});}catch(e){}
-  })();<\/script></body></html>`;
-}
-
 interface UserData {
   id: string; username: string | null; name: string; role: "admin" | "user"; totpSecret?: string; mustChangePassword?: boolean; assignedAccounts?: string[] | null; profileAvatar?: string | null; profilePrefs?: UserProfilePrefs;
   isFree?: boolean; pinned?: boolean; sortOrder?: number | null; session_limit?: number | null; expiresAt?: string | null; locationRequired?: boolean;
-  planStartsAt?: string | null;
-  planEndsAt?: string | null;
   tvOverride?: "on" | "off" | null;
   tvFeatureEnabled?: boolean;
-}
-
-function adminUserFeatures(u: any): { gmail: boolean; tv: boolean; link: boolean } {
-  const f = u?.features && typeof u.features === "object" ? u.features : {};
-  return {
-    gmail: f.gmail !== undefined ? f.gmail !== false : u?.feature_gmail !== false,
-    tv: f.tv !== undefined ? f.tv !== false : u?.feature_tv !== false,
-    link: f.link !== undefined ? f.link === true : u?.feature_link === true,
-  };
 }
 
 type TvOverrideValue = "inherit" | "on" | "off";
@@ -3954,20 +2577,12 @@ function applyTvOverrideToStoredUser(userId: string, tvOverride: "on" | "off" | 
 
 function isLocationRequiredForProfile(profile?: Partial<UserData> | null) {
   if (!profile) return false;
-  // Admins default to GPS OFF, but the admin card toggle can turn it ON
-  // explicitly. Honor the top-level flag / prefs override when present.
-  if (profile.role === "admin") {
-    if (typeof profile.locationRequired === "boolean") return profile.locationRequired;
-    if (profile.profilePrefs?.locationRequiredOverride === true) {
-      return profile.profilePrefs?.locationRequired === true;
-    }
-    return false;
-  }
   // Trust the top-level flag the server sends (already role-aware). Fall back
   // to nested prefs only if the top-level flag is missing.
   if (typeof profile.locationRequired === "boolean") return profile.locationRequired;
   const explicitOverride = profile.profilePrefs?.locationRequiredOverride === true;
   const nested = profile.profilePrefs?.locationRequired;
+  if (profile.role === "admin") return explicitOverride && nested === true;
   return !(explicitOverride && nested === false);
 }
 
@@ -4243,7 +2858,7 @@ function preloadAvatarCategory(categoryKey: string, maxWaitMs?: number, priority
 
 
 function emailIdentity(email: Pick<Email, "id" | "account_label">) {
-  return `${email.account_label || "unassigned"}:${email.id}`;
+  return `${email.account_label || "Primary"}:${email.id}`;
 }
 
 type EmailCategory = "signin" | "password_reset" | "account_update" | "other";
@@ -4761,40 +3376,33 @@ function ProfileSelectPage() {
       // user sees an active step while the encrypted request is in flight.
       const { warmupSession } = await import("./lib/secureTransport");
       setLoginStage("connecting");
-      await withTimeout(warmupSession(), LOGIN_HANDSHAKE_TIMEOUT_MS, "Connection is busy. Please try again.");
+      await warmupSession();
       perf.mark("handshake_ready");
 
       setLoginStage("authenticating");
-      const data: any = await withTimeout(apiCall("manage-app", {
+      const data: any = await apiCall("manage-app", {
         action: "login",
         username: selectedProfile.username,
         password,
         clientGeo,
         captchaToken,
-      }), LOGIN_EDGE_TIMEOUT_MS, "Login took too long. Please try again.");
-      if (!data?.success || !data?.user) {
-        throw new Error(data?.error === "plan_finished" ? "Plan finished" : (data?.error || "Login failed"));
-      }
+      });
       perf.mark("manage_app_login_ok");
 
       if (data.workerUrls && Array.isArray(data.workerUrls) && data.workerUrls.length > 0) {
         storeWorkerUrls(data.workerUrls);
       }
 
-      let loginUser = data.user;
+      sessionSet("user" as any, JSON.stringify(data.user));
       if (data.sessionToken) sessionSet("session_token" as any, data.sessionToken);
       try {
         const { storeSessionPair } = await import("./lib/sessionRefresh");
         storeSessionPair(data);
       } catch {}
-      try {
-        const fresh: any = await apiCall("manage-app", { action: "me" });
-        if (fresh?.success && fresh.user) loginUser = { ...loginUser, ...fresh.user };
-      } catch {}
-      sessionSet("user" as any, JSON.stringify(loginUser));
-      // Global session: start the countdown instantly on login so the pill
-      // appears immediately regardless of workflow (Gmail / TV / Direct Link).
-      try { markSessionStart(); } catch {}
+      // Session timer intentionally NOT started here — EmailViewer starts it
+      // after the first cached-email load finishes so users always see their
+      // inbox before the countdown begins.
+      try { sessionRemove("session_started_at" as any); } catch {}
       checkAuth();
 
       perf.end("navigate_viewer");
@@ -4837,27 +3445,22 @@ function ProfileSelectPage() {
       perf.mark("geo_ready");
       const { warmupSession } = await import("./lib/secureTransport");
       setLoginStage("connecting");
-      await withTimeout(warmupSession(), LOGIN_HANDSHAKE_TIMEOUT_MS, "Connection is busy. Please try again.");
+      await warmupSession();
       perf.mark("handshake_ready");
       setLoginStage("authenticating");
-      const data: any = await withTimeout(apiCall("manage-app", { action: "login_free", user_id: profile.id, clientGeo, captchaToken }), LOGIN_EDGE_TIMEOUT_MS, "Login took too long. Please try again.");
+      const data: any = await apiCall("manage-app", { action: "login_free", user_id: profile.id, clientGeo, captchaToken });
       perf.mark("manage_app_login_free_ok");
       if (!data?.success) throw new Error(data?.error || "Failed to enter profile");
       if (data.workerUrls && Array.isArray(data.workerUrls) && data.workerUrls.length > 0) {
         storeWorkerUrls(data.workerUrls);
       }
-      let freeLoginUser = data.user;
+      sessionSet("user" as any, JSON.stringify(data.user));
       if (data.sessionToken) sessionSet("session_token" as any, data.sessionToken);
       try {
         const { storeSessionPair } = await import("./lib/sessionRefresh");
         storeSessionPair(data);
       } catch {}
-      try {
-        const fresh: any = await apiCall("manage-app", { action: "me" });
-        if (fresh?.success && fresh.user) freeLoginUser = { ...freeLoginUser, ...fresh.user };
-      } catch {}
-      sessionSet("user" as any, JSON.stringify(freeLoginUser));
-      try { markSessionStart(); } catch {}
+      try { sessionRemove("session_started_at" as any); } catch {}
       checkAuth();
       perf.end("navigate_viewer");
       navigate("/viewer");
@@ -4974,7 +3577,7 @@ function ProfileSelectPage() {
               className="text-white text-center font-normal tracking-tight text-[32px] sm:text-[56px] leading-[1.1] mb-8 sm:mb-12"
               style={{ fontFamily: '"Netflix Sans","Helvetica Neue",Arial,sans-serif', fontWeight: 400 }}
             >
-              Who's watching?<span className="sr-only"> — Netflix Mail profile selection</span>
+              Who's watching?
             </motion.h1>
 
             {profiles.length > 6 && (
@@ -5180,13 +3783,6 @@ function ProfileSelectPage() {
 // ==================== ADMIN LOGIN ====================
 
 function AdminLoginPage() {
-  useRouteHead({
-    title: "Admin Sign-In — Netflix Mail",
-    description: "Restricted admin sign-in for Netflix Mail operators.",
-    ogTitle: "Admin Sign-In — Netflix Mail",
-    ogDescription: "Restricted admin sign-in for Netflix Mail operators.",
-    robots: "noindex, nofollow",
-  });
   // Remembered-username store. Key is versioned + isolated from any legacy
   // draft key that used to hold a password. What we persist:
   //   { u: <base64(username)>, t: <ms timestamp> }
@@ -5254,25 +3850,22 @@ function AdminLoginPage() {
   const [loginStage, setLoginStage] = useState<CaptchaStage | null>(null);
   const [gpsRequesting, setGpsRequesting] = useState(false);
   const [gpsPermissionMode, setGpsPermissionMode] = useState<GpsPermissionMode | null>(null);
-  // Per-admin GPS policy: public bootstrap intentionally excludes admins, so
-  // resolve the typed admin username through a tiny public policy endpoint.
-  // Default remains OFF until the server says this admin explicitly forced it.
-  const [adminLocationPolicy, setAdminLocationPolicy] = useState<{ username: string; required: boolean; loading: boolean }>({ username: "", required: false, loading: false });
-  const normalizedAdminUsername = username.trim().toLowerCase();
-  const locationRequired = adminLocationPolicy.username === normalizedAdminUsername ? adminLocationPolicy.required : false;
-  const locationPolicyChecking = !!normalizedAdminUsername && (adminLocationPolicy.loading || adminLocationPolicy.username !== normalizedAdminUsername);
+  // Per-admin GPS policy: default OFF. Only ON if the admin card toggle was
+  // explicitly enabled by another admin. Resolved from the bootstrap user list
+  // once the typed username matches a known admin — same flag the card shows.
+  const [adminUsers, setAdminUsers] = useState<any[]>([]);
+  const matchedAdmin = useMemo(() => {
+    const u = username.trim().toLowerCase();
+    if (!u) return null;
+    return adminUsers.find((x: any) => x?.role === "admin" && typeof x?.username === "string" && x.username.toLowerCase() === u) || null;
+  }, [username, adminUsers]);
+  const locationRequired = matchedAdmin ? isLocationRequiredForProfile(matchedAdmin) : false;
   const pendingClientGeoRef = useRef<LoginLocationPayload | null>(null);
   const armedGeoRef = useRef<Promise<LoginLocationPayload> | null>(null);
   const armedDeviceRef = useRef<Promise<DeviceFingerprint> | null>(null);
   const gpsBlocked = locationRequired && gpsPermissionMode !== null;
   const navigate = useNavigate();
-  const { user: authUser, checkAuth } = useAuth();
-
-  useEffect(() => {
-    if (authUser?.role === "admin" && authUser?.pending !== true && getSessionToken()) {
-      navigate("/admin/dashboard", { replace: true });
-    }
-  }, [authUser?.role, authUser?.pending, navigate]);
+  const { checkAuth } = useAuth();
 
   useEffect(() => {
     let cancelled = false;
@@ -5280,6 +3873,7 @@ function AdminLoginPage() {
       try {
         const bootstrap = await bootstrapFromSupabase({ force: true });
         if (cancelled) return;
+        setAdminUsers(Array.isArray(bootstrap.users) ? bootstrap.users : []);
         if (bootstrap.recaptcha?.enabled === true && bootstrap.recaptcha?.siteKey) {
           setSiteKey(bootstrap.recaptcha.siteKey);
           preloadRecaptchaScript();
@@ -5300,34 +3894,6 @@ function AdminLoginPage() {
     })();
     return () => { cancelled = true; };
   }, []);
-
-  useEffect(() => {
-    const u = username.trim();
-    const normalized = u.toLowerCase();
-    if (!normalized) {
-      setAdminLocationPolicy({ username: "", required: false, loading: false });
-      return;
-    }
-    let cancelled = false;
-    setAdminLocationPolicy((prev) => prev.username === normalized && prev.required
-      ? { ...prev, loading: true }
-      : { username: normalized, required: false, loading: true });
-    const t = window.setTimeout(() => {
-      apiCall("manage-app", { action: "admin_location_policy", username: u })
-        .then((res: any) => {
-          if (cancelled) return;
-          setAdminLocationPolicy({ username: normalized, required: res?.required === true, loading: false });
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setAdminLocationPolicy({ username: normalized, required: false, loading: false });
-        });
-    }, 250);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(t);
-    };
-  }, [username]);
 
   useEffect(() => {
     if (!locationRequired) { setGpsPermissionMode(null); return; }
@@ -5356,12 +3922,6 @@ function AdminLoginPage() {
       const msg = "Username and password required";
       setError(msg);
       notify.error(msg);
-      return;
-    }
-    if (locationPolicyChecking) {
-      const msg = "Checking admin security policy. Try again in a moment.";
-      setError(msg);
-      notify.info("Checking security", { id: "admin-policy-checking", description: "Try again in a moment.", duration: 2500 });
       return;
     }
     if (!locationRequired) {
@@ -5525,28 +4085,20 @@ function AdminLoginPage() {
     try {
       if (!checkRateLimit(`admin_${username}`)) throw new Error("Too many attempts. Wait 1 minute.");
 
-      const clientGeo = locationRequired
-        ? (preparedGeo || pendingClientGeoRef.current || await requireLoginLocation())
-        : (preparedGeo || pendingClientGeoRef.current || null);
+      const clientGeo = preparedGeo || pendingClientGeoRef.current || await requireLoginLocation();
       pendingClientGeoRef.current = null;
       perf.mark("geo_ready");
 
       const { warmupSession } = await import("./lib/secureTransport");
       setLoginStage("connecting");
-      await withTimeout(warmupSession(), LOGIN_HANDSHAKE_TIMEOUT_MS, "Connection is busy. Please try again.");
+      await warmupSession();
       perf.mark("handshake_ready");
 
       setLoginStage("authenticating");
-      const data: any = await withTimeout(apiCall("manage-app", { action: "login", username, password, clientGeo, captchaToken }), LOGIN_EDGE_TIMEOUT_MS, "Login took too long. Please try again.");
+      const data: any = await apiCall("manage-app", { action: "login", username, password, clientGeo, captchaToken });
       perf.mark("manage_app_login_ok");
 
-      if (!data?.success || !data?.user) {
-        throw new Error(data?.error === "plan_finished" ? "Plan finished" : (data?.error || "Login failed"));
-      }
       if (data.user.role !== "admin") throw new Error("Access denied");
-      if (typeof data.user.locationRequired === "boolean") {
-        setAdminLocationPolicy({ username: username.trim().toLowerCase(), required: data.user.locationRequired, loading: false });
-      }
       if (data.pendingToken) {
         sessionSet("pending_admin_token" as any, data.pendingToken);
         sessionSet("pending_admin_token_at" as any, String(Date.now()));
@@ -5560,14 +4112,13 @@ function AdminLoginPage() {
       checkAuth();
 
       perf.end("navigate_admin_auth");
-      notify.success("Password verified. Complete 2FA to enter admin.", { id: "admin-password-verified", duration: 3000 });
+      notify.success("Password verified. Complete 2FA to enter admin.");
       navigate("/admin-auth");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Login failed";
       perf.end(`failed: ${msg.slice(0, 60)}`);
       if (isGpsPermissionDeniedMessage(msg)) {
         setError("");
-        if (normalizedAdminUsername) setAdminLocationPolicy({ username: normalizedAdminUsername, required: true, loading: false });
         setGpsPermissionMode(getGpsPermissionMode(msg));
         showGpsPermissionToast(msg);
       } else {
@@ -5584,9 +4135,9 @@ function AdminLoginPage() {
 
 
   return (
-    <div className="min-h-[100dvh] overflow-y-auto bg-slate-900 flex items-center justify-center px-4 py-10 pt-[calc(env(safe-area-inset-top)+4.75rem)] sm:py-8 sm:pt-[calc(env(safe-area-inset-top)+2rem)]">
+    <div className="min-h-[100dvh] bg-slate-900 flex items-center justify-center px-4 py-6 pt-[calc(env(safe-area-inset-top)+1rem)]">
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-        className="bg-white w-full max-w-md rounded-2xl sm:rounded-3xl p-5 sm:p-8 shadow-2xl border-t-4 sm:border-t-8 border-red-600 mx-2 sm:mx-0 my-auto">
+        className="bg-white w-full max-w-md rounded-2xl sm:rounded-3xl p-5 sm:p-8 shadow-2xl border-t-4 sm:border-t-8 border-red-600 mx-2 sm:mx-0">
         <div className="flex justify-center mb-8">
           <div className="bg-slate-900 p-3 sm:p-4 rounded-2xl shadow-lg">
             <ShieldCheck className="text-white w-6 h-6 sm:w-8 sm:h-8" />
@@ -5624,9 +4175,9 @@ function AdminLoginPage() {
             <GpsPermissionSheet mode={gpsPermissionMode} loading={gpsRequesting || loading} onPrimeEnable={primeGpsEnableFromPointer} onEnable={() => void requestGpsPermissionOnly()} />
           </AnimatePresence>
 
-          <button type="submit" onPointerDownCapture={primeGpsFromPointer} disabled={loading || locationPolicyChecking}
+          <button type="submit" onPointerDownCapture={primeGpsFromPointer} disabled={loading}
             className="w-full bg-red-600 text-white font-bold py-4 rounded-2xl hover:bg-red-700 transition-all active:scale-95 disabled:opacity-50">
-            {loading ? "Authenticating..." : locationPolicyChecking ? "Checking..." : "Admin Sign In"}
+            {loading ? "Authenticating..." : "Admin Sign In"}
           </button>
         </form>
 
@@ -5655,13 +4206,6 @@ function AdminLoginPage() {
 
 // ==================== ADMIN 2FA ====================
 function AdminAuthPage() {
-  useRouteHead({
-    title: "Admin 2FA — Netflix Mail",
-    description: "Two-factor verification for Netflix Mail admin operators.",
-    ogTitle: "Admin 2FA — Netflix Mail",
-    ogDescription: "Two-factor verification for Netflix Mail admin operators.",
-    robots: "noindex, nofollow",
-  });
   const [step, setStep] = useState(1);
   const [otp, setOtp] = useState("");
   const [totp, setTotp] = useState("");
@@ -5672,8 +4216,7 @@ function AdminAuthPage() {
   const [copied, setCopied] = useState(false);
   const navigate = useNavigate();
   const otpRequested = React.useRef(false);
-  const { user, checkAuth } = useAuth();
-  const effectiveUser = user?.role === "admin" ? user : readStoredSessionUser();
+  const { user } = useAuth();
   const PROOF_TTL_MS = 15 * 60 * 1000;
   const [remainingMs, setRemainingMs] = useState<number>(() => {
     const at = Number(sessionGet("pending_admin_token_at" as any) || 0);
@@ -5702,15 +4245,8 @@ function AdminAuthPage() {
 
   useEffect(() => {
     const pending = (() => { try { return sessionGet("pending_admin_token" as any); } catch { return null; } })();
-    if (!pending) {
-      if (effectiveUser?.role === "admin" && effectiveUser?.pending !== true && getSessionToken()) {
-        navigate("/admin/dashboard", { replace: true });
-      } else {
-        navigate("/admin", { replace: true });
-      }
-      return;
-    }
-    if (!effectiveUser || effectiveUser.role !== "admin") { navigate("/admin", { replace: true }); return; }
+    if (!pending) { navigate("/admin", { replace: true }); return; }
+    if (!user || user.role !== "admin") { navigate("/admin", { replace: true }); return; }
 
 
     if (step === 1 && !otpRequested.current) {
@@ -5718,7 +4254,7 @@ function AdminAuthPage() {
       setLoading(true);
       (async () => {
         try {
-          await apiCall("manage-app", { action: "request_admin_otp", user_id: effectiveUser.id });
+          await apiCall("manage-app", { action: "request_admin_otp", user_id: user.id });
           notify.success("Secure OTP sent to your Telegram.");
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Failed to send OTP";
@@ -5731,11 +4267,11 @@ function AdminAuthPage() {
       })();
     }
 
-    if (step === 2 && !effectiveUser.totpSecret) {
+    if (step === 2 && !user.totpSecret) {
       (async () => {
         try {
-          if (effectiveUser.totpConfigured) return;
-          const res = await apiCall("manage-app", { action: "update_totp", user_id: effectiveUser.id });
+          if (user.totpConfigured) return;
+          const res = await apiCall("manage-app", { action: "update_totp", user_id: user.id });
           if (res.secret) setSecretKey(res.secret);
           if (res.otpauthUrl) setQrCode(res.otpauthUrl);
         } catch (err) {
@@ -5744,12 +4280,12 @@ function AdminAuthPage() {
         }
       })();
     }
-  }, [step, effectiveUser?.id, effectiveUser?.role, effectiveUser?.pending, effectiveUser?.totpConfigured, effectiveUser?.totpSecret, navigate]);
+  }, [step, user]);
 
   const verifyTelegramOtp = async (submittedOtp = otp) => {
     const code = submittedOtp.trim();
     if (loading) return;
-    if (!effectiveUser?.id) {
+    if (!user?.id) {
       navigate("/admin", { replace: true });
       return;
     }
@@ -5759,7 +4295,7 @@ function AdminAuthPage() {
     }
     setLoading(true);
     try {
-      await apiCall("manage-app", { action: "verify_otp", user_id: effectiveUser.id, otp: code });
+      await apiCall("manage-app", { action: "verify_otp", user_id: user.id, otp: code });
       setStep(2);
       setError("");
     } catch (err) {
@@ -5774,7 +4310,7 @@ function AdminAuthPage() {
   const verifyTotp = async (submittedTotp = totp) => {
     const code = submittedTotp.trim();
     if (loading) return;
-    if (!effectiveUser?.id) {
+    if (!user?.id) {
       navigate("/admin", { replace: true });
       return;
     }
@@ -5784,24 +4320,18 @@ function AdminAuthPage() {
     }
     setLoading(true);
     try {
-      await apiCall("manage-app", { action: "verify_totp", user_id: effectiveUser.id, code });
-      const finalData = await apiCall("manage-app", { action: "finalize_admin_session", user_id: effectiveUser.id });
-      if (!finalData?.success || !finalData?.sessionToken || finalData?.user?.role !== "admin") {
-        throw new Error(finalData?.error || "Admin session could not be finalized");
-      }
+      await apiCall("manage-app", { action: "verify_totp", user_id: user.id, code });
+      const finalData = await apiCall("manage-app", { action: "finalize_admin_session", user_id: user.id });
       if (finalData.workerUrls && Array.isArray(finalData.workerUrls) && finalData.workerUrls.length > 0) {
         storeWorkerUrls(finalData.workerUrls);
       }
-      sessionSet("admin_auth" as any, "true");
       if (finalData.sessionToken) sessionSet("session_token" as any, finalData.sessionToken);
       sessionRemove("pending_admin_token" as any);
-      sessionRemove("pending_admin_token_at" as any);
-      const adminUser = { ...(finalData.user || {}), pending: false };
-      sessionSet("user" as any, JSON.stringify(adminUser));
+      sessionSet("admin_auth" as any, "true");
+      sessionSet("user" as any, JSON.stringify(finalData.user));
       markSessionStart();
-      checkAuth();
       notify.success("Admin session secured.");
-      navigate("/admin/dashboard", { replace: true });
+      navigate("/admin/dashboard");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Invalid Google Auth Code";
       setError(msg);
@@ -5937,20 +4467,22 @@ function AdminAuthPage() {
 
 // ==================== ADMIN PANEL ====================
 function LoginEventsPanel() {
+  const [events, setEvents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
-  // SWR: paints instantly from cache, refreshes silently in background.
-  // Search re-fetches with a new key so previous searches stay cached.
-  const sliceKey = React.useMemo(() => `loginEvents:${search || "__all__"}`, [search]);
-  const fetcher = React.useCallback(async () => {
-    const res: any = await apiCall("manage-app", { action: "list_login_events", limit: 300, search: search || undefined });
-    return (res?.events || []) as any[];
-  }, [search]);
-  const { data, refreshing, hasData, refresh } = useAdminSlice<any[]>(sliceKey, fetcher);
-  const events = data || [];
-  const loading = !hasData && refreshing; // only block-render on true cold start
-  const load = () => refresh(true);
 
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res: any = await apiCall("manage-app", { action: "list_login_events", limit: 300, search: search || undefined });
+
+      setEvents(res?.events || []);
+    } catch (e: any) {
+      notify.error(e?.message || "Failed to load login events");
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   const exportCsv = () => {
     if (!events.length) return;
@@ -6111,54 +4643,31 @@ function LoginEventsPanel() {
 function AllEmailsPanel() {
   const [emails, setEmails] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [accountLabel, setAccountLabel] = useState("");
   const [labels, setLabels] = useState<{ label: string; user: string }[]>([]);
-  
+  const [primaryUser, setPrimaryUser] = useState<string>("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [viewing, setViewing] = useState<any | null>(null);
   const [offset, setOffset] = useState(0);
   // "picker" = show account cards, "list" = show emails for chosen account (or all).
   const [view, setView] = useState<"picker" | "list">("picker");
   const limit = 100;
-  const pageCacheRef = useRef(new Map<string, { at: number; emails: any[]; total: number; hasMore: boolean }>());
-  const PAGE_CACHE_TTL_MS = 20_000;
 
 
   const load = useCallback(async (nextOffset = 0, labelOverride?: string) => {
-    const effectiveLabel = labelOverride !== undefined ? labelOverride : accountLabel;
-    const cacheKey = JSON.stringify([effectiveLabel || "", nextOffset, search || ""]);
-    const cached = pageCacheRef.current.get(cacheKey);
-    if (cached && Date.now() - cached.at < PAGE_CACHE_TTL_MS) {
-      setEmails(cached.emails);
-      setTotal(cached.total);
-      setHasMore(cached.hasMore);
-      setOffset(nextOffset);
-      setSelected(new Set());
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     try {
+      const effectiveLabel = labelOverride !== undefined ? labelOverride : accountLabel;
       const res: any = await apiCall("manage-app", {
         action: "admin_list_emails",
         limit, offset: nextOffset,
         search: search || undefined,
         accountLabel: effectiveLabel || undefined,
       });
-      const nextEmails = res?.emails || [];
-      const nextTotal = res?.total || 0;
-      const nextHasMore = res?.hasMore === true;
-      pageCacheRef.current.set(cacheKey, { at: Date.now(), emails: nextEmails, total: nextTotal, hasMore: nextHasMore });
-      if (pageCacheRef.current.size > 30) {
-        const oldestKey = pageCacheRef.current.keys().next().value;
-        if (typeof oldestKey === "string") pageCacheRef.current.delete(oldestKey);
-      }
-      setEmails(nextEmails);
-      setTotal(nextTotal);
-      setHasMore(nextHasMore);
+      setEmails(res?.emails || []);
+      setTotal(res?.total || 0);
       setOffset(nextOffset);
       setSelected(new Set());
     } catch (e: any) {
@@ -6166,27 +4675,24 @@ function AllEmailsPanel() {
     } finally { setLoading(false); }
   }, [search, accountLabel]);
 
-  // SWR: cache the account picker so All Emails opens instantly on every
-  // subsequent visit. Fetcher is tiny (2 KV-cached settings reads).
-  const accountsFetcher = React.useCallback(async () => {
-    const accData: any = await apiCall("manage-app", { action: "get_settings", key: "email_accounts" });
-    const labels = Array.isArray(accData?.value)
-      ? accData.value
-          .map((a: any) => ({ label: String(a.label || a.user || "").trim(), user: String(a.user || "").trim() }))
-          .filter((a: any) => a.label)
-      : [];
-    return { labels };
-  }, []);
-  const { data: accountsData } = useAdminSlice<{ labels: { label: string; user: string }[] }>(
-    AdminSliceKeys.emailAccounts,
-    accountsFetcher,
-  );
-  React.useEffect(() => {
-    if (!accountsData) return;
-    setLabels(accountsData.labels);
+  useEffect(() => {
+    (async () => {
+      try {
+        const [accData, cfgData] = await Promise.all([
+          apiCall("manage-app", { action: "get_settings", key: "email_accounts" }),
+          apiCall("manage-app", { action: "get_settings", key: "config" }),
+        ]);
+        if (Array.isArray(accData?.value)) {
+          setLabels(accData.value
+            .map((a: any) => ({ label: String(a.label || a.user || "").trim(), user: String(a.user || "").trim() }))
+            .filter((a: any) => a.label));
+        }
+        const imapUser = cfgData?.value?.IMAP_USER;
+        if (typeof imapUser === "string" && imapUser.trim()) setPrimaryUser(imapUser.trim());
+      } catch {}
+    })();
     // Do NOT auto-load emails — admin picks an account first.
-  }, [accountsData]);
-
+  }, []);
 
 
   const openAccount = (label: string) => {
@@ -6199,7 +4705,6 @@ function AllEmailsPanel() {
     setView("picker");
     setEmails([]);
     setTotal(0);
-    setHasMore(false);
     setSelected(new Set());
     setViewing(null);
   };
@@ -6220,7 +4725,6 @@ function AllEmailsPanel() {
       const res: any = await apiCall("manage-app", { action: "admin_delete_emails", ids });
       notify.success(`Suppressed ${res?.deleted ?? ids.length} email${(res?.deleted ?? ids.length) === 1 ? "" : "s"}`);
       if (viewing && ids.includes(viewing.id)) setViewing(null);
-      pageCacheRef.current.clear();
       await load(offset);
     } catch (e: any) { notify.error(e?.message || "Delete failed"); }
   };
@@ -6236,8 +4740,9 @@ function AllEmailsPanel() {
   };
 
   if (view === "picker") {
-    const hasAny = labels.length > 0;
-    const totalAccounts = labels.length;
+    const hasPrimary = !!primaryUser;
+    const hasAny = hasPrimary || labels.length > 0;
+    const totalAccounts = (hasPrimary ? 1 : 0) + labels.length;
     return (
       <section className="relative overflow-hidden rounded-3xl bg-white p-5 sm:p-7 border border-slate-200/70 shadow-[0_20px_60px_-30px_rgba(220,38,38,0.25)]">
         {/* Soft brand blush */}
@@ -6285,6 +4790,27 @@ function AllEmailsPanel() {
               </div>
             </button>
 
+            {hasPrimary && (
+              <button
+                onClick={() => openAccount("Primary")}
+                className="group relative overflow-hidden text-left rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-white hover:border-amber-400 hover:shadow-lg hover:shadow-amber-500/10 active:scale-[0.99] transition-all p-4"
+              >
+                <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-amber-400 to-amber-600" />
+                <div className="flex items-center gap-3 pl-1">
+                  <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center flex-shrink-0 shadow-md shadow-amber-500/40">
+                    <Mail className="w-5 h-5 text-white" strokeWidth={2.5} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <p className="font-black text-slate-900 text-sm truncate">Primary</p>
+                      <span className="text-[8px] font-black bg-amber-500 text-white px-1.5 py-0.5 rounded tracking-wider shadow-sm">DEFAULT</span>
+                    </div>
+                    <p className="text-[10px] text-amber-700 font-mono truncate mt-0.5" title={primaryUser}>{primaryUser}</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-amber-400 group-hover:text-amber-600 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+                </div>
+              </button>
+            )}
 
             {labels.map((a, idx) => (
               <button key={a.label} onClick={() => openAccount(a.label)}
@@ -6333,13 +4859,12 @@ function AllEmailsPanel() {
       </div>
 
 
-      {loading && emails.length === 0 ? (
+      {loading ? (
         <div className="py-12 text-center text-slate-500 text-sm">Loading…</div>
       ) : emails.length === 0 ? (
         <div className="py-12 text-center text-slate-500 text-sm">No emails found.</div>
       ) : (
         <>
-          {loading && <div className="mb-2 text-[11px] font-bold text-amber-600">Refreshing cached results…</div>}
           <div className="overflow-auto border rounded-lg max-h-[65vh]">
             <table className="w-full text-xs sm:text-sm min-w-[800px]">
               <thead className="bg-slate-50 text-left text-slate-600 uppercase text-[10px] tracking-wider sticky top-0 z-10">
@@ -6368,10 +4893,10 @@ function AllEmailsPanel() {
             </table>
           </div>
           <div className="flex items-center justify-between mt-3 text-xs text-slate-600">
-            <span>Showing {offset + 1}–{offset + emails.length}{hasMore ? "+" : ` of ${total}`}</span>
+            <span>Showing {offset + 1}–{Math.min(offset + emails.length, total)} of {total}</span>
             <div className="flex gap-2">
               <button disabled={offset === 0} onClick={() => load(Math.max(0, offset - limit))} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold disabled:opacity-40">Prev</button>
-              <button disabled={!hasMore} onClick={() => load(offset + limit)} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold disabled:opacity-40">Next</button>
+              <button disabled={offset + limit >= total} onClick={() => load(offset + limit)} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold disabled:opacity-40">Next</button>
             </div>
           </div>
         </>
@@ -6393,7 +4918,7 @@ function AllEmailsPanel() {
             </div>
             <div className="p-4 overflow-auto flex-1">
               {viewing.html ? (
-                <iframe title="email" srcDoc={responsiveEmailSrcDoc(viewing as Email)} className="w-full border rounded block" scrolling="no" style={{ height: 220, minHeight: 220, overflow: "hidden" }} data-email-iframe="true" data-email-iframe-id={String((viewing as Email).id || "email-preview").replace(/[^a-zA-Z0-9_-]/g, "_")} sandbox="allow-popups allow-popups-to-escape-sandbox allow-scripts" />
+                <iframe title="email" srcDoc={`<!DOCTYPE html><html><head><base target="_blank"></head><body>${emailHtmlForDisplay(viewing as Email)}<script>(function(){function force(a){try{a.setAttribute('target','_blank');a.setAttribute('rel','noopener noreferrer');}catch(e){}}function scan(){document.querySelectorAll('a,button').forEach(force);}document.addEventListener('click',function(e){var a=e.target.closest('a,button');if(!a)return;var h=a.getAttribute('href')||a.dataset.href;if(h){e.preventDefault();window.open(h,'_blank','noopener,noreferrer');}},true);scan();try{new MutationObserver(scan).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['href','target']});}catch(e){}})();<\/script></body></html>`} className="w-full min-h-[400px] border rounded" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-scripts" />
               ) : (
                 <pre className="text-xs whitespace-pre-wrap text-slate-700">{viewing.preview || "(no content)"}</pre>
               )}
@@ -6595,750 +5120,15 @@ function RecipientsDrawer({ notification, onClose, onChanged }: { notification: 
   );
 }
 
-// ============ Cookies Tab ============
-// Two-step admin flow: 1) pick an IMAP account, 2) upload cookies file
-// (JSON array/object or Netscape cookies.txt). Parsed client-side; persisted
-// server-side per account so no browser localStorage is needed.
-type CookieRecord = { name: string; value: string; domain?: string; path?: string; expires?: number | null; secure?: boolean; httpOnly?: boolean; sameSite?: string };
-
-function parseNetscapeCookies(text: string): CookieRecord[] {
-  const out: CookieRecord[] = [];
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.replace(/^#HttpOnly_/i, "").trim();
-    if (!line || line.startsWith("#")) continue;
-    const parts = line.split("\t");
-    if (parts.length < 7) continue;
-    const [domain, , path, secure, expires, name, value] = parts;
-    if (!name) continue;
-    out.push({
-      name,
-      value: value ?? "",
-      domain,
-      path,
-      secure: /^true$/i.test(secure),
-      expires: Number(expires) || null,
-    });
-  }
-  return out;
-}
-
-// Chrome/Edge DevTools → Application → Cookies "Copy" gives a tab-separated
-// table: Name\tValue\tDomain\tPath\tExpires\tSize\tHttpOnly\tSecure\tSameSite\t...
-// (optional header row). Detect and parse that shape.
-function parseDevtoolsTable(text: string): CookieRecord[] {
-  const lines = text.split(/\r?\n/).map((l) => l.replace(/\r$/, "")).filter((l) => l.trim());
-  if (lines.length === 0) return [];
-  const rows = lines.map((l) => l.split("\t"));
-  if (!rows.every((r) => r.length >= 3)) return [];
-  const start = /^name$/i.test((rows[0][0] || "").trim()) ? 1 : 0;
-  const out: CookieRecord[] = [];
-  for (let i = start; i < rows.length; i++) {
-    const r = rows[i];
-    const name = (r[0] || "").trim();
-    if (!name || /\s/.test(name)) continue;
-    out.push({
-      name,
-      value: (r[1] ?? "").trim(),
-      domain: (r[2] ?? "").trim() || undefined,
-      path: (r[3] ?? "").trim() || undefined,
-      httpOnly: /^(true|✓|✔|yes)$/i.test((r[6] ?? "").trim()),
-      secure: /^(true|✓|✔|yes)$/i.test((r[7] ?? "").trim()),
-      sameSite: (r[8] ?? "").trim() || undefined,
-    });
-  }
-  return out;
-}
-
-function parseJsonCookies(text: string): CookieRecord[] {
-  const data = JSON.parse(text);
-  const arr = Array.isArray(data)
-    ? data
-    : Array.isArray((data as any)?.cookies)
-    ? (data as any).cookies
-    : (data && typeof data === "object" && (data as any).name)
-    ? [data]
-    : null;
-  if (!arr) throw new Error("JSON must be an array of cookies or { cookies: [...] }");
-  return arr.map((c: any) => ({
-    name: String(c.name ?? c.Name ?? ""),
-    value: String(c.value ?? c.Value ?? ""),
-    domain: c.domain ?? c.Domain,
-    path: c.path ?? c.Path,
-    expires: typeof c.expirationDate === "number" ? c.expirationDate : (typeof c.expires === "number" ? c.expires : null),
-    secure: !!(c.secure ?? c.Secure),
-    httpOnly: !!(c.httpOnly ?? c.HttpOnly),
-    sameSite: c.sameSite ?? c.SameSite,
-  })).filter((c: CookieRecord) => c.name);
-}
-
-function parseCookieHeader(text: string): CookieRecord[] {
-  // Handles:
-  //  - "a=1; b=2; c=3" single Cookie header
-  //  - one "name=value" per line
-  //  - "Set-Cookie: name=value; Path=/; …" (one per line, attributes stripped)
-  //  - "Cookie: a=1; b=2" prefix
-  const out: CookieRecord[] = [];
-  const cleaned = text
-    .split(/\r?\n/)
-    .map((l) => l.replace(/^\s*(set-cookie|cookie)\s*:\s*/i, ""))
-    .join("\n");
-  for (const rawLine of cleaned.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const pieces = line.split(";").map((p) => p.trim()).filter(Boolean);
-    for (let i = 0; i < pieces.length; i++) {
-      const piece = pieces[i];
-      const eq = piece.indexOf("=");
-      if (eq <= 0) continue;
-      const name = piece.slice(0, eq).trim();
-      const value = piece.slice(eq + 1).trim();
-      if (!name || /\s/.test(name)) continue;
-      if (/^(path|domain|expires|max-age|samesite|secure|httponly|priority|partitioned)$/i.test(name)) continue;
-      out.push({ name, value });
-      const rest = pieces.slice(i + 1).join(";").toLowerCase();
-      if (/(^|;|\s)(path|domain|expires|max-age|samesite|secure|httponly)\b/.test(rest)) break;
-    }
-  }
-  return out;
-}
-
-function parseManualCookieText(text: string): CookieRecord[] {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-  const chunks = lines.length ? lines : (text.trim() ? [text.trim()] : []);
-  return chunks.map((value, index) => ({ name: `manual_cookie_text_${index + 1}`, value }));
-}
-
-function parseCookiesAuto(text: string, filename: string): { cookies: CookieRecord[]; format: "json" | "netscape" | "devtools" | "header" | "text" } {
-  const trimmed = text.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return { cookies: parseJsonCookies(trimmed), format: "json" };
-  if (/^# Netscape/i.test(trimmed)) {
-    const c = parseNetscapeCookies(trimmed);
-    if (c.length) return { cookies: c, format: "netscape" };
-  }
-  if (/\t/.test(trimmed)) {
-    const firstRow = trimmed.split(/\r?\n/)[0].split("\t");
-    if (firstRow.length >= 7 && !/^name$/i.test((firstRow[0] || "").trim())) {
-      const c = parseNetscapeCookies(trimmed);
-      if (c.length) return { cookies: c, format: "netscape" };
-    }
-    const dt = parseDevtoolsTable(trimmed);
-    if (dt.length) return { cookies: dt, format: "devtools" };
-  }
-  try { return { cookies: parseJsonCookies(trimmed), format: "json" }; } catch {}
-  const netscape = parseNetscapeCookies(trimmed);
-  if (netscape.length) return { cookies: netscape, format: "netscape" };
-  const header = parseCookieHeader(trimmed);
-  if (header.length) return { cookies: header, format: "header" };
-  return { cookies: parseManualCookieText(trimmed), format: "text" };
-}
-
-function getSavedCookieCount(row: SavedCookieRow): number {
-  return Math.max(0, Number(row.count) || 0);
-}
-
-type SavedCookieRow = { imap_user: string; label?: string | null; filename?: string | null; format?: string | null; count: number; updated_at: string };
-type CookieDraftInfo = { length: number; kind: "JSON" | "Netscape" | "Text" | "" };
-
-function getCookieDraftInfo(text: string): CookieDraftInfo {
-  const raw = String(text || "");
-  let start = 0;
-  while (start < raw.length && /\s/.test(raw[start])) start += 1;
-  const first = raw[start] || "";
-  const sample = raw.slice(start, start + 512);
-  return {
-    length: raw.trimStart().length,
-    kind: !first ? "" : first === "[" || first === "{" ? "JSON" : /^# Netscape/i.test(sample) || /\t/.test(sample) ? "Netscape" : "Text",
-  };
-}
-
-function afterNextPaint(fn: () => void) {
-  if (typeof window === "undefined") { fn(); return; }
-  window.requestAnimationFrame(() => window.setTimeout(fn, 0));
-}
-
-function CookiesTab({ emailAccounts }: { emailAccounts: any[] }) {
-  const accounts = React.useMemo(() => {
-    type Acc = { key: string; label: string; user: string; host: string; isFilter?: boolean; parentLabel?: string };
-    const out: Acc[] = [];
-    const pushWithFilters = (base: Acc, filters: string[] | undefined) => {
-      const clean = (filters || []).map((f) => String(f || "").trim()).filter(Boolean);
-      if (clean.length === 0) { out.push(base); return; }
-      // Treat each recipient filter as its own "account" (higher priority)
-      for (const f of clean) {
-        out.push({
-          key: `${base.key}::${f.toLowerCase()}`,
-          label: f,
-          user: f,
-          host: base.host,
-          isFilter: true,
-          parentLabel: base.label,
-        });
-      }
-    };
-
-
-
-    for (const a of (emailAccounts || [])) {
-      pushWithFilters(
-        { key: a.label || a.user, label: a.label || a.user, user: a.user, host: a.host },
-        a.recipientFilters,
-      );
-    }
-    // Recipient-filter entries take first priority
-    return out.sort((x, y) => Number(!!y.isFilter) - Number(!!x.isFilter));
-  }, [emailAccounts]);
-
-  // `selected` is the imap_user (email address) of the account being edited.
-  const [selected, setSelected] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(false);
-  const [pasteInfo, setPasteInfo] = React.useState<CookieDraftInfo>({ length: 0, kind: "" });
-  const [editLoadingFor, setEditLoadingFor] = React.useState<string | null>(null);
-  const [mode, setMode] = React.useState<"paste" | "file">("paste");
-  const [dragActive, setDragActive] = React.useState(false);
-  const pasteRef = React.useRef<HTMLTextAreaElement | null>(null);
-  const pendingPasteValue = React.useRef<string | null>("");
-  const draftDirtyRef = React.useRef(false);
-  const editLoadSeq = React.useRef(0);
-  const contentCache = React.useRef<Record<string, { content: string; filename: string; format: string }>>({});
-  const dragCounter = React.useRef(0);
-  const fileRef = React.useRef<HTMLInputElement | null>(null);
-
-  const applyDraftText = React.useCallback((value: string, markDirty = false) => {
-    const next = String(value || "");
-    pendingPasteValue.current = next;
-    if (pasteRef.current) {
-      pasteRef.current.value = next;
-      pendingPasteValue.current = null;
-    }
-    draftDirtyRef.current = markDirty;
-    setPasteInfo(getCookieDraftInfo(next));
-  }, []);
-
-  const bindPasteRef = React.useCallback((node: HTMLTextAreaElement | null) => {
-    pasteRef.current = node;
-    if (node && pendingPasteValue.current !== null) {
-      node.value = pendingPasteValue.current;
-      pendingPasteValue.current = null;
-    }
-  }, []);
-
-  const getDraftText = React.useCallback(() => {
-    if (pasteRef.current) return pasteRef.current.value;
-    return pendingPasteValue.current || "";
-  }, []);
-
-  // SWR: cookies-list paints instantly from cache, silent background refresh.
-  const cookiesFetcher = React.useCallback(async () => {
-    const res: any = await apiCall("manage-app", { action: "admin_cookies_list" });
-    return (Array.isArray(res?.items) ? res.items : []) as SavedCookieRow[];
-  }, []);
-  const { data: savedRowsData, hasData: cookiesHasData, refreshing: cookiesRefreshing, refresh: refreshCookies } =
-    useAdminSlice<SavedCookieRow[]>(AdminSliceKeys.cookies, cookiesFetcher);
-  const savedRows = savedRowsData || [];
-  const loading = !cookiesHasData && cookiesRefreshing;
-
-  const savedByUser = React.useMemo(() => {
-    const map: Record<string, SavedCookieRow> = {};
-    for (const r of savedRows) map[String(r.imap_user || "").toLowerCase()] = r;
-    return map;
-  }, [savedRows]);
-
-  const refresh = React.useCallback(async () => {
-    try { await refreshCookies(true); }
-    catch (e: any) { notify.error("Could not load saved cookies", { description: e?.message || String(e) }); }
-  }, [refreshCookies]);
-
-
-  const selectedAcc = React.useMemo(() => {
-    if (!selected) return null;
-    const key = selected.toLowerCase();
-    return accounts.find((a) => (a.user || "").toLowerCase() === key) || { key, label: selected, user: selected, host: "" };
-  }, [selected, accounts]);
-
-  const saveCookies = async (rawText: string, filename: string) => {
-    if (!selected) return;
-    const text = rawText.trim();
-    if (!text) { notify.error("Nothing to save — paste or upload some cookies first"); return; }
-    if (text.length > 2 * 1024 * 1024) { notify.error("Content too large (max 2 MB)"); return; }
-    setBusy(true);
-    try {
-      const { cookies, format } = parseCookiesAuto(text, filename);
-      if (!cookies.length) throw new Error("No cookies detected — expected JSON, Netscape cookies.txt, or 'name=value; …' header format");
-      await apiCall("manage-app", {
-        action: "admin_cookies_save",
-        imap_user: selected,
-        label: selectedAcc?.label || selected,
-        filename,
-        format,
-        count: cookies.length,
-        content: text,
-      });
-      notify.success(`Saved ${cookies.length} cookie${cookies.length === 1 ? "" : "s"}`, {
-        description: `${selected} • ${format.toUpperCase()}${savedByUser[selected.toLowerCase()] ? " (replaced previous)" : ""}`,
-      });
-      delete contentCache.current[selected.toLowerCase()];
-      applyDraftText("");
-      if (fileRef.current) fileRef.current.value = "";
-      await refresh();
-      setSelected(null);
-    } catch (e: any) {
-      notify.error("Could not save cookies", { description: e?.message || String(e) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleFile = async (file: File) => {
-    if (file.size > 2 * 1024 * 1024) { notify.error("File too large (max 2 MB)"); return; }
-    const text = await file.text();
-    await saveCookies(text, file.name);
-  };
-
-  const [pendingDelete, setPendingDelete] = React.useState<SavedCookieRow | null>(null);
-  const [deleting, setDeleting] = React.useState(false);
-  const confirmDelete = async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
-    try {
-      await apiCall("manage-app", { action: "admin_cookies_delete", imap_user: pendingDelete.imap_user });
-      notify.success("Saved cookies deleted");
-      setPendingDelete(null);
-      await refresh();
-    } catch (e: any) {
-      notify.error("Delete failed", { description: e?.message || String(e) });
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  const fetchContent = React.useCallback(async (imapUser: string): Promise<{ content: string; filename: string; format: string } | null> => {
-    try {
-      const key = imapUser.toLowerCase();
-      if (contentCache.current[key]) return contentCache.current[key];
-      const res: any = await apiCall("manage-app", { action: "admin_cookies_get", imap_user: imapUser });
-      if (!res?.item?.content) throw new Error("No content stored");
-      const item = { content: res.item.content, filename: res.item.filename || "cookies.txt", format: res.item.format || "text" };
-      contentCache.current[key] = item;
-      return item;
-    } catch (e: any) {
-      notify.error("Fetch failed", { description: e?.message || String(e) });
-      return null;
-    }
-  }, []);
-
-  const openEditorForRow = React.useCallback(async (row: SavedCookieRow) => {
-    const imapUser = row.imap_user;
-    const key = imapUser.toLowerCase();
-    const seq = ++editLoadSeq.current;
-
-    const cached = contentCache.current[key];
-    if (cached) {
-      setMode("paste");
-      applyDraftText(cached.content);
-      setEditLoadingFor(null);
-      setSelected(imapUser);
-      return;
-    }
-
-    // Fetch FIRST — keep the user on the list with a spinner on the row —
-    // then transition to the editor only when the content is ready.
-    setEditLoadingFor(imapUser);
-    try {
-      const data = await fetchContent(imapUser);
-      if (seq !== editLoadSeq.current) return;
-      if (!data) return;
-      setMode("paste");
-      applyDraftText(data.content);
-      setSelected(imapUser);
-    } finally {
-      if (seq === editLoadSeq.current) setEditLoadingFor(null);
-    }
-  }, [applyDraftText, fetchContent]);
-
-
-  const copyForRow = async (imapUser: string) => {
-    const data = await fetchContent(imapUser);
-    if (!data) return;
-    try {
-      await navigator.clipboard.writeText(data.content);
-      notify.success("Cookies copied to clipboard");
-    } catch (e: any) {
-      notify.error("Copy failed", { description: e?.message || "Clipboard unavailable" });
-    }
-  };
-
-  const openLinkForRow = async (imapUser: string) => {
-    const data = await fetchContent(imapUser);
-    if (!data) return;
-    const blob = new Blob([data.content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank", "noopener,noreferrer");
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  };
-
-  const downloadForRow = async (imapUser: string) => {
-    const data = await fetchContent(imapUser);
-    if (!data) return;
-    const safeName = imapUser.replace(/[^\w.\-@]/g, "_");
-    const ext = data.format === "json" ? ".json" : ".txt";
-    const name = `cookies-${safeName}${ext}`;
-    const blob = new Blob([data.content], { type: data.format === "json" ? "application/json" : "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = name; document.body.appendChild(a); a.click();
-    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 300);
-    notify.success(`Downloaded ${name}`);
-  };
-
-  return (
-    <div className="space-y-4 sm:space-y-6">
-      {/* Header */}
-      <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="bg-amber-50 p-2 rounded-xl"><Key className="w-5 h-5 text-amber-600" /></div>
-          <div className="min-w-0">
-            <h2 className="font-black text-base sm:text-lg text-slate-900">Cookies Vault</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {selected ? `Editing cookies for ${selected}` : "Manage saved cookies per IMAP account. Stored in Supabase."}
-            </p>
-          </div>
-          {selected && (
-            <button onClick={() => { editLoadSeq.current += 1; setSelected(null); setEditLoadingFor(null); applyDraftText(""); }} className="ml-auto text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1">
-              <ArrowLeft className="w-3.5 h-3.5" /> Back
-            </button>
-          )}
-        </div>
-      </section>
-
-      {/* STEP 1 — pick account + saved cookies list */}
-      {!selected && (
-        <>
-          <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
-            <h3 className="font-bold text-sm text-slate-900 mb-3 flex items-center gap-2">
-              <Server className="w-4 h-4 text-slate-400" /> Select an IMAP account
-              <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-full ml-auto">{accounts.filter((a) => !savedByUser[(a.user || "").toLowerCase()]).length}</span>
-            </h3>
-            {accounts.length === 0 ? (
-              <p className="text-sm text-slate-500 py-6 text-center">No IMAP accounts configured yet. Add one under the "Email Accounts" tab.</p>
-            ) : accounts.filter((a) => !savedByUser[(a.user || "").toLowerCase()]).length === 0 ? (
-              <p className="text-sm text-slate-500 py-6 text-center">All IMAP accounts already have saved cookies. Delete a saved entry below to re-add one.</p>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {accounts.filter((a) => !savedByUser[(a.user || "").toLowerCase()]).map((a) => {
-                  return (
-                    <li key={a.key}>
-                      <button
-                         onClick={() => { if (!a.user) return; editLoadSeq.current += 1; setMode("paste"); applyDraftText(""); setSelected(a.user); }}
-                        disabled={!a.user}
-                        className="w-full flex items-center gap-3 py-3 px-2 rounded-xl hover:bg-slate-50 transition-colors text-left disabled:opacity-50"
-                      >
-                        <div className={`p-2 rounded-xl ${a.isFilter ? "bg-red-50" : "bg-slate-100"}`}>
-                          <Mail className={`w-4 h-4 ${a.isFilter ? "text-red-600" : "text-slate-500"}`} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <p className="font-bold text-sm text-slate-900 truncate">{a.label}</p>
-                            {a.isFilter && (
-                              <span className="text-[9px] font-black uppercase tracking-wider bg-red-50 text-red-700 border border-red-200 px-1.5 py-0.5 rounded">
-                                Recipient
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-slate-500 truncate">
-                            {a.isFilter ? `via ${a.parentLabel}${a.host ? ` • ${a.host}` : ""}` : `${a.user || "—"}${a.host ? ` • ${a.host}` : ""}`}
-                          </p>
-                        </div>
-                        <ChevronRight className="w-4 h-4 text-slate-300" />
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
-
-
-          {/* Saved cookies list */}
-          <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
-            <h3 className="font-bold text-sm text-slate-900 mb-3 flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Saved Cookies
-              <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-full ml-auto">{savedRows.length}</span>
-            </h3>
-            {loading ? (
-              <div className="py-8 text-center text-sm text-slate-500 flex items-center justify-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" /> Loading…
-              </div>
-            ) : savedRows.length === 0 ? (
-              <p className="text-sm text-slate-500 py-6 text-center">No cookies saved yet. Pick an account above to add some.</p>
-            ) : (
-              <ul className="space-y-2">
-                {savedRows.map((r) => (
-                  <li key={r.imap_user} className="rounded-2xl border border-slate-200 bg-slate-50/40 p-3 sm:p-4">
-                    <div className="flex items-start gap-3">
-                      <div className="bg-emerald-100 p-2 rounded-xl flex-shrink-0"><Mail className="w-4 h-4 text-emerald-700" /></div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="font-bold text-sm text-slate-900 truncate">{r.imap_user}</p>
-                          {r.format && (
-                            <span className="text-[10px] font-bold uppercase tracking-wider bg-white text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">{r.format}</span>
-                          )}
-                        </div>
-                        <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5">
-                          Saved {new Date(r.updated_at).toLocaleString()}
-                          {r.filename ? ` · ${r.filename}` : ""}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-3 flex items-center gap-2 flex-wrap">
-                      <button
-                        onClick={() => copyForRow(r.imap_user)}
-                        className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 px-3 py-1.5 rounded-lg transition-colors"
-                        title="Copy cookie text to clipboard"
-                      >
-                        <Copy className="w-3.5 h-3.5" /> Copy
-                      </button>
-                      <button
-                        onClick={() => openLinkForRow(r.imap_user)}
-                        className="inline-flex items-center gap-1.5 text-xs font-black text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-lg transition-colors shadow-sm"
-                        title="Open cookie content in a new tab"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" /> Open link
-                      </button>
-                      <button
-                        onClick={() => downloadForRow(r.imap_user)}
-                        className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 px-3 py-1.5 rounded-lg transition-colors"
-                        title="Download as .txt / .json"
-                      >
-                        <Download className="w-3.5 h-3.5" /> Download
-                      </button>
-                      <button
-                        onClick={() => openEditorForRow(r)}
-                        disabled={editLoadingFor === r.imap_user}
-                        className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 px-3 py-1.5 rounded-lg transition-colors ml-auto disabled:opacity-60 disabled:cursor-wait"
-                        title="Load current cookies into editor to edit or replace"
-                      >
-                        {editLoadingFor === r.imap_user
-                          ? (<><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</>)
-                          : (<><Edit className="w-3.5 h-3.5" /> Change</>)}
-                      </button>
-
-
-                      <button
-                        onClick={() => setPendingDelete(r)}
-                        className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-red-600 hover:bg-red-50 px-2 py-1.5 rounded-lg transition-colors"
-                        title="Delete saved cookies"
-                        aria-label={`Delete cookies for ${r.imap_user}`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </>
-      )}
-
-      {/* STEP 2 — paste first, then upload */}
-      {selected && selectedAcc && (
-        <section className="bg-white p-4 sm:p-6 rounded-2xl border shadow-sm">
-          <div className="flex items-center gap-3 mb-4 sm:mb-5 pb-4 border-b border-slate-100">
-            <div className="bg-slate-100 p-2 rounded-xl flex-shrink-0">
-              <Mail className="w-4 h-4 text-slate-500" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="font-bold text-sm text-slate-900 truncate">{selectedAcc.label}</p>
-              <p className="text-[11px] sm:text-xs text-slate-500 truncate">{selectedAcc.user || "—"}</p>
-            </div>
-            {savedByUser[selected.toLowerCase()] && (
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200 px-2 py-1 rounded-md">Will replace existing</span>
-            )}
-          </div>
-
-
-
-
-          {/* Paste FIRST, then Upload */}
-          <div role="tablist" aria-label="Save mode" className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl mb-4">
-            <button
-              role="tab"
-              aria-selected={mode === "paste"}
-              onClick={() => setMode("paste")}
-              className={`flex items-center justify-center gap-1.5 sm:gap-2 h-9 rounded-lg text-xs sm:text-sm font-bold transition-all ${mode === "paste" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
-            >
-              <ClipboardPaste className="w-3.5 h-3.5" /> Paste text
-            </button>
-            <button
-              role="tab"
-              aria-selected={mode === "file"}
-              onClick={() => setMode("file")}
-              className={`flex items-center justify-center gap-1.5 sm:gap-2 h-9 rounded-lg text-xs sm:text-sm font-bold transition-all ${mode === "file" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
-            >
-              <Upload className="w-3.5 h-3.5" /> Upload file
-            </button>
-          </div>
-
-          {mode === "paste" && (
-            <div>
-              <div className="relative">
-                <textarea
-                  ref={bindPasteRef}
-                  onChange={(e) => { draftDirtyRef.current = true; setPasteInfo(getCookieDraftInfo(e.target.value)); }}
-                  placeholder={'[\n  { "name": "SessionId", "value": "…", "domain": ".netflix.com" }\n]\n\n— or —\n\n.netflix.com\tTRUE\t/\tTRUE\t1900000000\tSessionId\t…'}
-                  rows={10}
-                  disabled={busy}
-                  className="w-full text-[11px] sm:text-xs font-mono rounded-xl border border-slate-300 bg-slate-50 p-3 sm:p-4 focus:outline-none focus:ring-2 focus:ring-red-400/60 focus:border-red-400 focus:bg-white resize-y transition-colors placeholder:text-slate-400"
-                  spellCheck={false}
-                />
-                {pasteInfo.length > 0 && (
-                  <span className="absolute top-2 right-2 text-[10px] font-bold uppercase tracking-wider bg-white/90 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200 backdrop-blur">
-                    {pasteInfo.kind}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center justify-between mt-3 gap-3 flex-wrap">
-                <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
-                  <span className={`w-1.5 h-1.5 rounded-full ${pasteInfo.length ? "bg-emerald-500" : "bg-slate-300"}`} />
-                  {pasteInfo.length ? `${pasteInfo.length.toLocaleString()} chars` : "Auto-detects JSON or Netscape"}
-                </p>
-                <div className="flex items-center gap-2">
-                  {pasteInfo.length > 0 && (
-                    <button onClick={() => applyDraftText("", true)} disabled={busy} className="text-xs font-bold text-slate-600 hover:text-slate-900 px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors">Clear</button>
-                  )}
-                  <button
-                    onClick={() => {
-                      const text = getDraftText();
-                      const looksJson = text.trim().startsWith("[") || text.trim().startsWith("{");
-                      saveCookies(text, looksJson ? "pasted-cookies.json" : "pasted-cookies.txt");
-                    }}
-                    disabled={busy || !pasteInfo.length}
-                    className="text-xs font-black text-white bg-red-600 hover:bg-red-700 disabled:bg-slate-300 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition-colors inline-flex items-center gap-1.5 shadow-sm"
-                  >
-                    {busy ? (<><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving…</>) : "Save cookies"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {mode === "file" && (
-            <label
-              htmlFor="cookies-file-input"
-              className={`relative block border-2 border-dashed rounded-2xl p-6 sm:p-10 text-center cursor-pointer transition-all select-none ${
-                busy
-                  ? "border-slate-200 bg-slate-50 opacity-70 cursor-wait"
-                  : dragActive
-                  ? "border-red-500 bg-red-50 scale-[1.01] shadow-inner"
-                  : "border-slate-300 hover:border-red-400 hover:bg-red-50/30"
-              }`}
-              onDragEnter={(e) => { e.preventDefault(); dragCounter.current += 1; setDragActive(true); }}
-              onDragLeave={(e) => { e.preventDefault(); dragCounter.current -= 1; if (dragCounter.current <= 0) { dragCounter.current = 0; setDragActive(false); } }}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
-              onDrop={(e) => { e.preventDefault(); dragCounter.current = 0; setDragActive(false); const f = e.dataTransfer.files?.[0]; if (f) handleFile(f); }}
-            >
-              <input
-                id="cookies-file-input"
-                ref={fileRef}
-                type="file"
-                accept=".json,.txt,application/json,text/plain"
-                className="sr-only"
-                disabled={busy}
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
-              />
-              <div className={`mx-auto w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center mb-3 transition-colors ${dragActive ? "bg-red-100" : "bg-slate-100"}`}>
-                {busy ? <Loader2 className="w-6 h-6 text-slate-500 animate-spin" /> : <Upload className={`w-6 h-6 ${dragActive ? "text-red-600" : "text-slate-500"}`} />}
-              </div>
-              <p className="text-sm sm:text-base font-bold text-slate-900">
-                {busy ? "Saving…" : dragActive ? "Release to upload" : (
-                  <>
-                    <span className="hidden sm:inline">Drag &amp; drop or </span>
-                    <span className="text-red-600 underline underline-offset-2">choose a file</span>
-                  </>
-                )}
-              </p>
-              <p className="text-[11px] sm:text-xs text-slate-500 mt-1.5">JSON (EditThisCookie / Puppeteer) or Netscape cookies.txt · max 2 MB</p>
-            </label>
-          )}
-        </section>
-      )}
-
-      {/* Delete confirmation modal */}
-      {pendingDelete && (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-150"
-          onClick={() => !deleting && setPendingDelete(null)}
-        >
-          <div
-            className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in zoom-in-95 duration-150"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-5 sm:p-6">
-              <div className="flex items-start gap-3">
-                <div className="bg-red-50 p-2.5 rounded-xl flex-shrink-0">
-                  <Trash2 className="w-5 h-5 text-red-600" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-black text-base text-slate-900">Delete saved cookies?</h3>
-                  <p className="text-xs text-slate-500 mt-1">This action can't be undone.</p>
-                </div>
-              </div>
-              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="font-bold text-slate-500 w-16 flex-shrink-0">Account</span>
-                  <span className="font-mono text-slate-900 truncate">{pendingDelete.imap_user}</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="font-bold text-slate-500 w-16 flex-shrink-0">Format</span>
-                  <span className="text-slate-900">{pendingDelete.format ? pendingDelete.format.toUpperCase() : "—"}</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="font-bold text-slate-500 w-16 flex-shrink-0">Saved</span>
-                  <span className="text-slate-900">{new Date(pendingDelete.updated_at).toLocaleString()}</span>
-                </div>
-                {pendingDelete.filename && (
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="font-bold text-slate-500 w-16 flex-shrink-0">File</span>
-                    <span className="text-slate-900 truncate">{pendingDelete.filename}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-2 px-5 sm:px-6 py-4 bg-slate-50 border-t border-slate-100">
-              <button
-                onClick={() => setPendingDelete(null)}
-                disabled={deleting}
-                className="text-xs font-bold text-slate-700 hover:bg-slate-200 px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDelete}
-                disabled={deleting}
-                className="text-xs font-black text-white bg-red-600 hover:bg-red-700 disabled:bg-red-400 px-4 py-2 rounded-lg transition-colors inline-flex items-center gap-1.5 shadow-sm"
-              >
-                {deleting ? (<><Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting…</>) : (<><Trash2 className="w-3.5 h-3.5" /> Delete cookies</>)}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-
 function AdminPanel() {
   usePageHead("Admin Dashboard — Netflix Mail", "Admin control panel for managing users, sessions, notifications, and email accounts.", "/admin/dashboard");
   const ADMIN_ACTIVE_TAB_KEY = "admin_active_tab_v1";
-  const [activeTab, setActiveTab] = useState<"users" | "security" | "emails" | "settings" | "notifications" | "inbox" | "logins" | "allmails" | "deploy" | "tv" | "cookies" | "directlink">(() => {
+  const [activeTab, setActiveTab] = useState<"users" | "security" | "emails" | "settings" | "notifications" | "inbox" | "logins" | "allmails" | "deploy" | "tv">(() => {
     try {
       const raw = sessionStorage.getItem(ADMIN_ACTIVE_TAB_KEY);
       if (!raw) return "users";
-      const allowed = new Set(["users", "security", "emails", "settings", "notifications", "inbox", "logins", "allmails", "deploy", "tv", "cookies", "directlink"]);
+      const allowed = new Set(["users", "security", "emails", "settings", "notifications", "inbox", "logins", "allmails", "deploy", "tv"]);
       return allowed.has(raw) ? (raw as any) : "users";
-
     } catch {
       return "users";
     }
@@ -7364,52 +5154,6 @@ function AdminPanel() {
   const [savingConcurrentSessionLimit, setSavingConcurrentSessionLimit] = useState(false);
   const [freeAvatarCooldownMin, setFreeAvatarCooldownMinState] = useState<string>("5");
   const [savingFreeAvatarCooldown, setSavingFreeAvatarCooldown] = useState(false);
-  const [contactInfoTelegrams, setContactInfoTelegrams] = useState<string[]>([""]);
-  const [contactInfoWhatsapps, setContactInfoWhatsapps] = useState<string[]>([""]);
-  const [contactInfoEmails, setContactInfoEmails] = useState<string[]>([""]);
-  const [contactInfoNote, setContactInfoNote] = useState<string>("");
-  const [savingContactInfo, setSavingContactInfo] = useState(false);
-  const loadContactInfoRef = useRef(false);
-  useEffect(() => {
-    if (loadContactInfoRef.current) return;
-    loadContactInfoRef.current = true;
-    (async () => {
-      try {
-        const res: any = await apiCall("manage-app", { action: "get_settings", key: "contact_info" });
-        const v = res?.value || res?.settings?.contact_info || null;
-        if (v && typeof v === "object") {
-          const pickArr = (plural: any, singular: any): string[] => {
-            if (Array.isArray(plural) && plural.length) return plural.map((x: any) => String(x || "")).filter(Boolean);
-            if (typeof singular === "string" && singular.trim()) return [singular.trim()];
-            return [""];
-          };
-          setContactInfoTelegrams(pickArr(v.telegrams, v.telegram));
-          setContactInfoWhatsapps(pickArr(v.whatsapps, v.whatsapp));
-          setContactInfoEmails(pickArr(v.emails, v.email));
-          setContactInfoNote(v.note || "");
-        }
-      } catch {}
-    })();
-  }, []);
-  const saveContactInfo = async () => {
-    setSavingContactInfo(true);
-    try {
-      const clean = (arr: string[]) => Array.from(new Set(arr.map(s => s.trim()).filter(Boolean)));
-      await apiCall("manage-app", { action: "save_contact_info", value: {
-        telegrams: clean(contactInfoTelegrams),
-        whatsapps: clean(contactInfoWhatsapps),
-        emails: clean(contactInfoEmails),
-        note: contactInfoNote.trim(),
-      }});
-      notify.success("Contact info saved");
-    } catch (err) {
-      notify.error(err instanceof Error ? err.message : "Failed to save contact info");
-    } finally {
-      setSavingContactInfo(false);
-    }
-  };
-
-
 
   const [savingAdminSessionTimeout, setSavingAdminSessionTimeout] = useState(false);
   const [captchaEnabled, setCaptchaEnabled] = useState<boolean>(false);
@@ -7437,19 +5181,14 @@ function AdminPanel() {
   const [editSessionLimit, setEditSessionLimit] = useState<string>("");
   const [editExpiresAt, setEditExpiresAt] = useState<string>(""); // "YYYY-MM-DDTHH:mm" for free users only
   const [editAutoDelete, setEditAutoDelete] = useState<boolean>(true);
-  const [editPlanStartsAt, setEditPlanStartsAt] = useState<string>("");
-  const [editPlanEndsAt, setEditPlanEndsAt] = useState<string>("");
   const [editTvOverride, setEditTvOverride] = useState<"inherit" | "on" | "off">("inherit");
-  const [editDirectLinkEnabled, setEditDirectLinkEnabled] = useState<boolean>(false);
   const [newIsFree, setNewIsFree] = useState(false);
   const [newFreeExpiresAt, setNewFreeExpiresAt] = useState<string>(""); // "YYYY-MM-DDTHH:mm"
-  const [newPlanStartsAt, setNewPlanStartsAt] = useState<string>("");
-  const [newPlanEndsAt, setNewPlanEndsAt] = useState<string>("");
   const [newTvOverride, setNewTvOverride] = useState<"inherit" | "on" | "off">("inherit");
   const [dragUserId, setDragUserId] = useState<string | null>(null);
   const [reordering, setReordering] = useState(false);
   const [serverConfig, setServerConfig] = useState({
-    TELEGRAM_BOT_TOKEN: "", TELEGRAM_CHAT_ID: "",
+    TELEGRAM_BOT_TOKEN: "", TELEGRAM_CHAT_ID: "", IMAP_HOST: "", IMAP_PORT: "", IMAP_USER: "", IMAP_PASSWORD: "",
   });
   const [savingConfig, setSavingConfig] = useState(false);
   const [emailAccounts, setEmailAccounts] = useState<EmailAccountConfig[]>([]);
@@ -7490,146 +5229,50 @@ function AdminPanel() {
   const [savingLocationPolicy, setSavingLocationPolicy] = useState(false);
 
   // VPS Vault (admin-only metadata in app_settings; private key file lives in R2)
-  const [vpsCfg, setVpsCfg] = useState<{ ip: string; runnerUrl: string; mode: "vps" | "github"; keyFilename: string; keyUploadedAt: string; keySize: number; hasKey: boolean }>({
-    ip: "140.238.226.213", runnerUrl: "", mode: "vps", keyFilename: "vps-private-key.pem", keyUploadedAt: "", keySize: 0, hasKey: false,
+  const [vpsCfg, setVpsCfg] = useState<{ ip: string; keyFilename: string; keyUploadedAt: string; keySize: number; hasKey: boolean }>({
+    ip: "140.238.226.213", keyFilename: "vps-private-key.pem", keyUploadedAt: "", keySize: 0, hasKey: false,
   });
-  const [vpsDeletingKey, setVpsDeletingKey] = useState(false);
-  const [vpsTesting, setVpsTesting] = useState(false);
-  const [vpsHealth, setVpsHealth] = useState<{ ok: boolean; status: number; latencyMs: number; message?: string; at: number } | null>(null);
-  const [githubTesting, setGithubTesting] = useState(false);
-  const [githubHealth, setGithubHealth] = useState<{ ok: boolean; status: string; latencyMs: number; message?: string; runUrl?: string; at: number } | null>(null);
-  const [ghSetupStatus, setGhSetupStatus] = useState<{ configured: boolean; repo: string; hasPat: boolean; hasHmac: boolean; updatedAt: string | null } | null>(null);
-  const [ghSetupSyncing, setGhSetupSyncing] = useState(false);
-  const [ghSetupPat, setGhSetupPat] = useState("");
-  const [ghSetupPatVisible, setGhSetupPatVisible] = useState(false);
-  const [ghSetupRepo, setGhSetupRepo] = useState("");
-  const [ghSetupOpen, setGhSetupOpen] = useState(false);
-  const loadGhStatus = React.useCallback(async () => {
-    try {
-      const res: any = await apiCall("manage-app", { action: "admin_github_status" });
-      setGhSetupStatus({
-        configured: !!res?.configured,
-        repo: String(res?.repo || ""),
-        hasPat: !!res?.hasPat,
-        hasHmac: !!res?.hasHmac,
-        updatedAt: res?.updatedAt || null,
-      });
-      setGhSetupRepo((prev) => prev || String(res?.repo || ""));
-    } catch {}
-  }, []);
-  const revealSavedPat = React.useCallback(async () => {
-    try {
-      const res: any = await apiCall("manage-app", { action: "admin_github_status", reveal: true });
-      if (res?.pat) setGhSetupPat(String(res.pat));
-      else notify.error("No saved token found");
-    } catch (e: any) {
-      notify.error("Could not load saved token", { description: e?.message || String(e) });
-    }
-  }, []);
-  React.useEffect(() => { if (activeTab === "tv") { void loadGhStatus(); } }, [activeTab, loadGhStatus]);
-  const runGhSetup = async () => {
-    if (ghSetupSyncing) return;
-    if (!ghSetupPat.trim() && !ghSetupStatus?.hasPat) {
-      notify.error("Paste a GitHub token first");
-      return;
-    }
-    setGhSetupSyncing(true);
-    try {
-      const res: any = await apiCall("manage-app", { action: "admin_github_setup", pat: ghSetupPat.trim(), repo: ghSetupRepo.trim() });
-      notify.success("GitHub setup synced", { description: res?.message || `Linked to ${res?.repo || "repo"}` });
-      setGhSetupPat("");
-      setGhSetupOpen(false);
-      await loadGhStatus();
-    } catch (e: any) {
-      notify.error("GitHub setup failed", { description: e?.message || String(e) });
-    } finally {
-      setGhSetupSyncing(false);
-    }
-  };
   const [vpsLoading, setVpsLoading] = useState(false);
   const [vpsSaving, setVpsSaving] = useState(false);
   const [vpsUploading, setVpsUploading] = useState(false);
   const vpsFileInputRef = useRef<HTMLInputElement | null>(null);
   const vpsLoadedRef = useRef(false);
+  const [vpsConnectOpen, setVpsConnectOpen] = useState(false);
 
-  // VPS config: SWR-cached so opening TV tab paints instantly on repeat visits.
-  const vpsFetcher = React.useCallback(async () => {
-    const res: any = await apiCall("manage-app", { action: "admin_get_vps_config" });
-    return (res?.value || {}) as any;
-  }, []);
-  const { data: vpsData, refreshing: vpsRefreshing } = useAdminSlice<any>(
-    AdminSliceKeys.vps,
-    vpsFetcher,
-    { enabled: activeTab === "tv" },
-  );
-  React.useEffect(() => { setVpsLoading(vpsRefreshing); }, [vpsRefreshing]);
-  React.useEffect(() => {
-    if (!vpsData) return;
-    setVpsCfg((prev) => ({
-      ip: typeof vpsData.ip === "string" && vpsData.ip ? vpsData.ip : prev.ip,
-      runnerUrl: typeof vpsData.runnerUrl === "string" ? vpsData.runnerUrl : prev.runnerUrl,
-      mode: vpsData.mode === "github" ? "github" : "vps",
-      keyFilename: typeof vpsData.keyFilename === "string" && vpsData.keyFilename ? vpsData.keyFilename : prev.keyFilename,
-      keyUploadedAt: typeof vpsData.keyUploadedAt === "string" ? vpsData.keyUploadedAt : "",
-      keySize: Number(vpsData.keySize) || 0,
-      hasKey: vpsData.hasKey === true,
-    }));
-  }, [vpsData]);
-
+  useEffect(() => {
+    if (activeTab !== "tv" || vpsLoadedRef.current) return;
+    vpsLoadedRef.current = true;
+    (async () => {
+      setVpsLoading(true);
+      try {
+        const res: any = await apiCall("manage-app", { action: "admin_get_vps_config" });
+        const v = res?.value || {};
+        setVpsCfg((prev) => ({
+          ip: typeof v.ip === "string" && v.ip ? v.ip : prev.ip,
+          keyFilename: typeof v.keyFilename === "string" && v.keyFilename ? v.keyFilename : prev.keyFilename,
+          keyUploadedAt: typeof v.keyUploadedAt === "string" ? v.keyUploadedAt : "",
+          keySize: Number(v.keySize) || 0,
+          hasKey: v.hasKey === true,
+        }));
+      } catch (e: any) {
+        console.warn("[vps] load failed:", e?.message || e);
+      } finally {
+        setVpsLoading(false);
+      }
+    })();
+  }, [activeTab]);
 
   const saveVpsConfig = async () => {
     if (vpsSaving) return;
     setVpsSaving(true);
     try {
-      const res: any = await apiCall("manage-app", { action: "admin_save_vps_access", ip: vpsCfg.ip.trim(), runnerUrl: vpsCfg.runnerUrl.trim(), mode: vpsCfg.mode });
+      const res: any = await apiCall("manage-app", { action: "admin_save_vps_access", ip: vpsCfg.ip.trim() });
       if (res?.value) setVpsCfg((p) => ({ ...p, ...res.value }));
-      notify.success("VPS settings saved");
+      notify.success("VPS IP saved");
     } catch (e: any) {
       notify.error("Failed to save VPS", { description: e?.message || String(e) });
     } finally {
       setVpsSaving(false);
-    }
-  };
-
-  const testVpsRunner = async () => {
-    if (vpsTesting) return;
-    setVpsTesting(true);
-    try {
-      const res: any = await apiCall("manage-app", { action: "admin_test_vps_runner" });
-      const h = { ok: !!res?.ok, status: Number(res?.status) || 0, latencyMs: Number(res?.latencyMs) || 0, message: res?.message || "", at: Date.now() };
-      setVpsHealth(h);
-      if (h.ok) notify.success(`Runner online · ${h.latencyMs}ms`);
-      else notify.error(`Runner offline${h.status ? ` (${h.status})` : ""}`, { description: h.message || "No response from /health" });
-    } catch (e: any) {
-      setVpsHealth({ ok: false, status: 0, latencyMs: 0, message: e?.message || String(e), at: Date.now() });
-      notify.error("Test failed", { description: e?.message || String(e) });
-    } finally {
-      setVpsTesting(false);
-    }
-  };
-
-  const testGithubRunner = async () => {
-    if (githubTesting) return;
-    setGithubTesting(true);
-    try {
-      const res: any = await apiCall("manage-app", { action: "admin_test_github_runner" });
-      const h = {
-        ok: !!res?.ok,
-        status: String(res?.githubStatus || res?.status || "unknown"),
-        latencyMs: Number(res?.latencyMs) || 0,
-        message: res?.message || "",
-        runUrl: res?.runUrl || "",
-        at: Date.now(),
-      };
-      setGithubHealth(h);
-      if (h.ok) notify.success("GitHub runner test sent", { description: h.message || "Check GitHub Actions." });
-      else notify.error("GitHub runner problem", { description: h.message || "Check repo token and Actions runners." });
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      setGithubHealth({ ok: false, status: "error", latencyMs: 0, message: msg, at: Date.now() });
-      notify.error("GitHub test failed", { description: msg });
-    } finally {
-      setGithubTesting(false);
     }
   };
 
@@ -7677,20 +5320,6 @@ function AdminPanel() {
       notify.success("Private key downloaded");
     } catch (e: any) {
       notify.error("Download failed", { description: e?.message || String(e) });
-    }
-  };
-  const deleteVpsKey = async () => {
-    if (vpsDeletingKey) return;
-    if (!confirm("Delete the stored SSH private key? You'll need to upload a new one before the current VPS can be re-used.")) return;
-    setVpsDeletingKey(true);
-    try {
-      const res: any = await apiCall("manage-app", { action: "admin_delete_vps_key" });
-      if (res?.value) setVpsCfg((p) => ({ ...p, ...res.value }));
-      notify.success("Private key deleted");
-    } catch (e: any) {
-      notify.error("Delete failed", { description: e?.message || String(e) });
-    } finally {
-      setVpsDeletingKey(false);
     }
   };
 
@@ -7774,7 +5403,6 @@ function AdminPanel() {
   const [r2TestResult, setR2TestResult] = useState<{ ok: boolean; message: string; latencyMs?: number; publicUrlWorks?: boolean; warnings?: string[] } | null>(null);
   const [r2ShowSecret, setR2ShowSecret] = useState(false);
   const [r2Dirty, setR2Dirty] = useState(false);
-  const safeR2ForCache = (r2: any | null | undefined) => r2 ? { ...r2, secretAccessKey: "" } : null;
   const lastAdminRefreshRef = useRef(0);
   const updateR2Cfg = useCallback((patch: Partial<R2Cfg>) => {
     setR2Dirty(true);
@@ -7806,7 +5434,7 @@ function AdminPanel() {
   const [stats, setStats] = useState<{ totalUsers: number; totalEmails: number }>(() => {
     // Hydrate instantly from cache so the dashboard never flashes 0.
     try {
-      const cached = sessionStorage.getItem(STATS_CACHE_KEY);
+      const cached = localStorage.getItem(STATS_CACHE_KEY);
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed && typeof parsed.totalUsers === "number" && typeof parsed.totalEmails === "number") return parsed;
@@ -7820,7 +5448,7 @@ function AdminPanel() {
     return { totalUsers: 0, totalEmails: 0 };
   });
   useEffect(() => {
-    try { sessionStorage.setItem(STATS_CACHE_KEY, JSON.stringify(stats)); } catch {}
+    try { localStorage.setItem(STATS_CACHE_KEY, JSON.stringify(stats)); } catch {}
   }, [stats]);
 
   useEffect(() => {
@@ -7828,7 +5456,7 @@ function AdminPanel() {
   }, [activeTab]);
 
   const availableAccounts = useMemo<string[]>(() => {
-    const labels: string[] = [];
+    const labels = ["Primary"];
     emailAccounts.forEach(acc => {
       if (acc.label && !labels.includes(acc.label)) labels.push(acc.label);
     });
@@ -7877,12 +5505,6 @@ function AdminPanel() {
         setStats(prev => ({ ...prev, totalEmails: res.emailsTotal }));
       }
       if (Array.isArray(res?.notifications)) setAdminNotifs(res.notifications);
-      if (!silent) {
-        if (Array.isArray(res?.notifications)) setAdminSlice(AdminSliceKeys.notifications, res.notifications);
-        if (Array.isArray(res?.cookies)) setAdminSlice(AdminSliceKeys.cookies, res.cookies);
-        if (Array.isArray(res?.loginEvents)) setAdminSlice(`${AdminSliceKeys.loginEvents}:__all__`, res.loginEvents);
-        if (res?.vpsAccess) setAdminSlice(AdminSliceKeys.vps, res.vpsAccess);
-      }
 
       if (!silent && res?.settings) {
         const s = res.settings;
@@ -7908,6 +5530,10 @@ function AdminPanel() {
           setServerConfig({
             TELEGRAM_BOT_TOKEN: c.TELEGRAM_BOT_TOKEN || "",
             TELEGRAM_CHAT_ID: c.TELEGRAM_CHAT_ID || "",
+            IMAP_HOST: c.IMAP_HOST || "",
+            IMAP_PORT: c.IMAP_PORT || "",
+            IMAP_USER: c.IMAP_USER || "",
+            IMAP_PASSWORD: c.IMAP_PASSWORD || "",
           });
         }
         if (Array.isArray(s.primary_cloudflare_urls)) setPrimaryCfUrls(s.primary_cloudflare_urls);
@@ -7926,16 +5552,11 @@ function AdminPanel() {
             return { ...rest, cloudflareUrls: urls, recipientFilters: Array.isArray(acc.recipientFilters) ? acc.recipientFilters : [] };
           });
           setEmailAccounts(migrated);
-          const labels = migrated
-            .map((a: any) => ({ label: String(a.label || a.user || "").trim(), user: String(a.user || "").trim() }))
-            .filter((a: any) => a.label);
-          setAdminSlice(AdminSliceKeys.emailAccounts, { labels });
         }
         const m1 = Number(s.session_config?.timeoutMinutes);
-        if (Number.isFinite(m1) && m1 >= 0) { setSessionTimeoutMin(String(m1)); if (m1 > 0) writeCachedTimeoutMinutes("user", m1); }
+        if (Number.isFinite(m1) && m1 >= 0) setSessionTimeoutMin(String(m1));
         const m2 = Number(s.admin_session_config?.timeoutMinutes);
-        if (Number.isFinite(m2) && m2 >= 0) { setAdminSessionTimeoutMin(String(m2)); if (m2 > 0) writeCachedTimeoutMinutes("admin", m2); }
-
+        if (Number.isFinite(m2) && m2 >= 0) setAdminSessionTimeoutMin(String(m2));
         const cs = Number(s.session_limits?.maxPerUser);
         if (Number.isFinite(cs) && cs >= 0) setConcurrentSessionLimit(String(cs));
         setIpwhoAlertEnabled(s.ipwho_alert?.enabled === true);
@@ -7965,7 +5586,7 @@ function AdminPanel() {
           setR2Cfg((current) => r2Dirty ? current : ({
             accountId: res.r2.accountId || "",
             accessKeyId: res.r2.accessKeyId || "",
-            secretAccessKey: "",
+            secretAccessKey: res.r2.secretAccessKey || "",
             bucket: res.r2.bucket || "",
             publicBaseUrl: res.r2.publicBaseUrl || "",
             pathPrefix: res.r2.pathPrefix || "notifications/",
@@ -7979,7 +5600,7 @@ function AdminPanel() {
           const serverVersion = Number(res.settings?.settings_version) || Date.now();
           const prev = readAdminCache();
           reconcileVersion(prev?.version ?? 0, serverVersion);
-          writeAdminCache({ version: serverVersion, settings: res.settings, r2: safeR2ForCache(res.r2) });
+          writeAdminCache({ version: serverVersion, settings: res.settings, r2: res.r2 || null });
           emitSyncStatus({ kind: "saved" });
         } catch (e) {
           emitSyncStatus({ kind: "error", message: "Cache write failed" });
@@ -8024,6 +5645,10 @@ function AdminPanel() {
         setServerConfig({
           TELEGRAM_BOT_TOKEN: c.TELEGRAM_BOT_TOKEN || "",
           TELEGRAM_CHAT_ID: c.TELEGRAM_CHAT_ID || "",
+          IMAP_HOST: c.IMAP_HOST || "",
+          IMAP_PORT: c.IMAP_PORT || "",
+          IMAP_USER: c.IMAP_USER || "",
+          IMAP_PASSWORD: c.IMAP_PASSWORD || "",
         });
       }
       if (Array.isArray(s.primary_cloudflare_urls)) setPrimaryCfUrls(s.primary_cloudflare_urls);
@@ -8067,7 +5692,7 @@ function AdminPanel() {
         setR2Cfg({
           accountId: r2.accountId || "",
           accessKeyId: r2.accessKeyId || "",
-          secretAccessKey: "",
+          secretAccessKey: r2.secretAccessKey || "",
           bucket: r2.bucket || "",
           publicBaseUrl: r2.publicBaseUrl || "",
           pathPrefix: r2.pathPrefix || "notifications/",
@@ -8211,7 +5836,7 @@ function AdminPanel() {
           title: maintenanceTitle.trim(),
           message: maintenanceMessage.trim(),
           startsAt: null,
-          endsAt: maintenanceEndsAt ? new Date(maintenanceEndsAt).toISOString() : null,
+          endsAt: null,
           versionFrom: nextVersionFrom,
           versionTo: nextVersionTo,
           updated_at: new Date().toISOString(),
@@ -8221,6 +5846,7 @@ function AdminPanel() {
       setMaintenanceVersionFrom(nextVersionFrom);
       setMaintenanceVersionTo(nextVersionTo);
       setMaintenanceStartsAt("");
+      setMaintenanceEndsAt("");
       prevSavedVersionToRef.current = nextVersionTo;
       try { await refreshBootstrap(); } catch {}
       window.dispatchEvent(new Event("maintenance:changed"));
@@ -8253,7 +5879,7 @@ function AdminPanel() {
           ...c,
           accountId: res.config.accountId ?? c.accountId,
           accessKeyId: res.config.accessKeyId ?? c.accessKeyId,
-          secretAccessKey: "",
+          secretAccessKey: res.config.secretAccessKey ?? c.secretAccessKey,
           bucket: res.config.bucket ?? c.bucket,
           publicBaseUrl: res.config.publicBaseUrl ?? c.publicBaseUrl,
           pathPrefix: res.config.pathPrefix ?? c.pathPrefix,
@@ -8307,29 +5933,28 @@ function AdminPanel() {
 
 
   const toggleCaptcha = async () => {
-    const prevEnabled = captchaEnabled;
-    const newEnabled = !prevEnabled;
-    if (newEnabled && (!siteKey || !secretKeyVal)) { notify.error("Enter both Site Key and Secret Key first"); return; }
-    // Optimistic flip — no second round-trip. Rollback on failure.
-    setCaptchaEnabled(newEnabled);
     try {
+      const newEnabled = !captchaEnabled;
+      if (newEnabled && (!siteKey || !secretKeyVal)) { notify.error("Enter both Site Key and Secret Key first"); return; }
       await apiCall("manage-app", { action: "set_settings", key: "recaptcha", value: { siteKey, secretKey: secretKeyVal, enabled: newEnabled } });
+      const fresh = await apiCall("manage-app", { action: "get_settings", key: "recaptcha" });
+      setCaptchaEnabled(fresh.value?.enabled === true);
+      setSiteKey(fresh.value?.siteKey || "");
+      setSecretKeyVal(fresh.value?.secretKey || "");
       notify.success(newEnabled ? "CAPTCHA enabled!" : "CAPTCHA disabled!");
     } catch (err) {
-      setCaptchaEnabled(prevEnabled);
       notify.error(err instanceof Error ? err.message : "Failed to toggle CAPTCHA");
     }
   };
 
   const saveRecaptchaSettings = async () => {
-    const prevEnabled = captchaEnabled;
-    const newEnabled = !!(siteKey && secretKeyVal);
-    setCaptchaEnabled(newEnabled);
     try {
+      const newEnabled = !!(siteKey && secretKeyVal);
       await apiCall("manage-app", { action: "set_settings", key: "recaptcha", value: { siteKey, secretKey: secretKeyVal, enabled: newEnabled } });
+      const fresh = await apiCall("manage-app", { action: "get_settings", key: "recaptcha" });
+      setCaptchaEnabled(fresh.value?.enabled === true);
       notify.success("ReCAPTCHA settings saved!");
     } catch (err) {
-      setCaptchaEnabled(prevEnabled);
       notify.error(err instanceof Error ? err.message : "Failed to save settings");
     }
   };
@@ -8557,49 +6182,12 @@ function AdminPanel() {
     await setProfileTvOverride(u, next);
   };
 
-  const toggleUserFeature = async (u: UserData, key: "gmail" | "tv" | "link") => {
-    const cur = adminUserFeatures(u);
-    const nextVal = key === "link" ? !(cur[key] === true) : !(cur[key] !== false);
-    const nextFeatures = { ...cur, [key]: nextVal };
-    const flatKey = key === "gmail" ? "feature_gmail" : key === "tv" ? "feature_tv" : "feature_link";
-    setUsers((prev) => prev.map((x) => x.id === u.id ? ({ ...x, features: nextFeatures, [flatKey]: nextVal } as any) : x));
+  const reloadAdminNotifs = async () => {
     try {
-      const res: any = await apiCall("manage-app", { action: "update_user", id: u.id, features: { [key]: nextVal } });
-      const persistedFeatures = res?.user?.features || nextFeatures;
-      const persistedPatch = {
-        features: persistedFeatures,
-        feature_gmail: persistedFeatures.gmail !== false,
-        feature_tv: persistedFeatures.tv !== false,
-        feature_link: persistedFeatures.link === true,
-      };
-      setUsers((prev) => prev.map((x) => x.id === u.id ? ({ ...x, ...persistedPatch } as any) : x));
-      patchBootstrapCacheUser(u.id, persistedPatch);
-      try { await refreshBootstrap(); } catch {}
-      notify.success(`${key === "gmail" ? "Gmail" : key === "tv" ? "TV" : "Direct Link"} ${nextVal ? "enabled" : "disabled"}`);
-    } catch (err) {
-      setUsers((prev) => prev.map((x) => x.id === u.id ? ({ ...x, features: cur, [flatKey]: (u as any)[flatKey] } as any) : x));
-      patchBootstrapCacheUser(u.id, { features: cur, [flatKey]: (u as any)[flatKey] });
-      notify.error(err instanceof Error ? err.message : "Failed to update feature");
-    }
-  };
-
-
-  // Hydrate notifications from SWR cache on mount (instant paint after prefetch).
-  const notifFetcher = React.useCallback(async () => {
-    const nl: any = await apiCall("manage-app", { action: "admin_list_notifications" });
-    return Array.isArray(nl?.notifications) ? nl.notifications : [];
-  }, []);
-  const { data: cachedNotifs, refresh: refreshAdminNotifs } = useAdminSlice<any[]>(AdminSliceKeys.notifications, notifFetcher, { enabled: activeTab === "notifications" && adminNotifs.length === 0 });
-  const reloadAdminNotifs = React.useCallback(async () => {
-    try {
-      const list = await refreshAdminNotifs(true);
-      setAdminNotifs(Array.isArray(list) ? list : []);
+      const nl = await apiCall("manage-app", { action: "admin_list_notifications" });
+      if (Array.isArray(nl?.notifications)) setAdminNotifs(nl.notifications);
     } catch (err) { console.warn(err); }
-  }, [refreshAdminNotifs]);
-  React.useEffect(() => {
-    if (Array.isArray(cachedNotifs) && cachedNotifs.length) setAdminNotifs(cachedNotifs);
-  }, [cachedNotifs]);
-
+  };
 
   const sendNotification = async () => {
     if (!notifTitle.trim() || !notifBody.trim()) { notify.error("Title and body required"); return; }
@@ -8706,14 +6294,14 @@ function AdminPanel() {
     if (!confirm("This suppresses matching emails for every user forever. Future syncs will not bring them back. Continue?")) return;
     setClearingInbox(true);
     try {
-      await apiCall("manage-app", {
+      const res = await apiCall("manage-app", {
         action: "admin_clear_inbox",
         mode: inboxMode,
         accountLabel: inboxMode === "label" ? inboxLabel : undefined,
         days: inboxMode === "days" ? Number(inboxDays) : undefined,
         confirm: inboxMode === "all" ? inboxConfirm : undefined,
       });
-      notify.success("Matching emails suppressed");
+      notify.success(`Suppressed ${res.deleted || 0} email(s)`);
       setInboxConfirm("");
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Failed");
@@ -8747,9 +6335,9 @@ function AdminPanel() {
     }
   };
 
-  const loginAsUser = async (targetUser: UserData, startWorkflow?: "gmail" | "tv" | "link") => {
+  const loginAsUser = async (targetUser: UserData) => {
     try {
-      notify.loading(`Opening ${targetUser.name}${startWorkflow === "link" ? "'s Direct Link page" : "'s inbox"}…`, { id: "impersonate" });
+      notify.loading(`Opening ${targetUser.name}'s inbox…`, { id: "impersonate" });
       const data = await apiCall("manage-app", { action: "impersonate", target_user_id: targetUser.id });
       notify.dismiss("impersonate");
 
@@ -8760,7 +6348,6 @@ function AdminPanel() {
       const impersonatedUser = { ...(data.user || {}), impersonated: true, adminId: data.user?.adminId || null };
       sessionSet("user" as any, JSON.stringify(impersonatedUser));
       if (data.sessionToken) sessionSet("session_token" as any, data.sessionToken);
-      if (startWorkflow) requestWorkflowView(startWorkflow);
       sessionRemove("admin_auth" as any);
       checkAuth();
       navigate("/admin/viewer", { replace: true });
@@ -8798,10 +6385,6 @@ function AdminPanel() {
       }
       // Free profile: passwordless one-tap entry. Username is optional/manual only
       // (never generated); password is never sent for free profiles.
-      if (!newIsFree && newPlanStartsAt && !newPlanEndsAt) {
-        notify.error("Plan end date required", { description: "Add an end date or use the duration box so the Plan pill can count down." });
-        return;
-      }
       const tvOv: "on" | "off" | null = newTvOverride === "on" || newTvOverride === "off" ? newTvOverride : null;
       const body: any = newIsFree
         ? {
@@ -8823,14 +6406,9 @@ function AdminPanel() {
             assigned_accounts: normalizeSelectedAccounts(newUserAccounts).length > 0 ? normalizeSelectedAccounts(newUserAccounts) : null,
             is_free: false,
             tv_override: tvOv,
-            plan_starts_at: newPlanStartsAt ? new Date(newPlanStartsAt).toISOString() : null,
-            plan_ends_at: newPlanEndsAt ? new Date(newPlanEndsAt).toISOString() : null,
           };
-      // Clear the form immediately so the admin sees the input reset even
-      // while the create RPC is still in flight. On failure we don't restore
-      // the raw fields — the error toast is enough context to retry.
-      setNewUsername(""); setNewPassword(""); setNewName(""); setNewUserAccounts([]); setNewIsFree(false); setNewFreeExpiresAt(""); setNewPlanStartsAt(""); setNewPlanEndsAt(""); setNewTvOverride("inherit");
       const res: any = await apiCall("manage-app", body);
+      setNewUsername(""); setNewPassword(""); setNewName(""); setNewUserAccounts([]); setNewIsFree(false); setNewFreeExpiresAt(""); setNewTvOverride("inherit");
       if (!res?.user) throw new Error("Server did not return the created user");
       setUsers(prev => [...prev, res.user]);
       setStats(prev => ({ ...prev, totalUsers: prev.totalUsers + 1 }));
@@ -8918,18 +6496,13 @@ function AdminPanel() {
 
 
   const deleteUser = async (id: string) => {
-    // Optimistic removal — the UI feels instant; rollback if the server rejects.
-    const snapshot = users;
-    setUsers(prev => prev.filter(u => u.id !== id));
-    setStats(prev => ({ ...prev, totalUsers: Math.max(0, prev.totalUsers - 1) }));
-    setDeleteConfirmUser(null);
     setDeletingUser(true);
     try {
       await apiCall("manage-app", { action: "delete", id });
+      setUsers(users.filter(u => u.id !== id));
       notify.success("User deleted!");
+      setDeleteConfirmUser(null);
     } catch (err) {
-      setUsers(snapshot);
-      setStats(prev => ({ ...prev, totalUsers: snapshot.length }));
       notify.error("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setDeletingUser(false);
@@ -9013,13 +6586,6 @@ function AdminPanel() {
         }
       }
       const tvOvOut: "on" | "off" | null = editTvOverride === "on" ? "on" : editTvOverride === "off" ? "off" : null;
-      const isPaidNonAdmin = !isFreeTarget && target?.role !== "admin";
-      if (isPaidNonAdmin && editPlanStartsAt && !editPlanEndsAt) {
-        notify.error("Plan end date required", { description: "Add an end date or use the duration box so the Plan pill can count down." });
-        return;
-      }
-      const plan_starts_at = isPaidNonAdmin ? (editPlanStartsAt ? new Date(editPlanStartsAt).toISOString() : null) : undefined;
-      const plan_ends_at = isPaidNonAdmin ? (editPlanEndsAt ? new Date(editPlanEndsAt).toISOString() : null) : undefined;
       await apiCall("manage-app", {
         action: "update_user",
         id: userId,
@@ -9027,19 +6593,15 @@ function AdminPanel() {
         assigned_accounts: normalizeSelectedAccounts(editAccountsList).length > 0 ? normalizeSelectedAccounts(editAccountsList) : null,
         session_limit,
         tv_override: tvOverridePayload(editTvOverride),
-        features: { link: editDirectLinkEnabled },
         ...(expires_at !== undefined ? { expires_at } : {}),
         ...(isFreeTarget ? { auto_delete: editAutoDelete } : {}),
-        ...(plan_starts_at !== undefined ? { plan_starts_at } : {}),
-        ...(plan_ends_at !== undefined ? { plan_ends_at } : {}),
       });
       const nextAccounts = normalizeSelectedAccounts(editAccountsList).length > 0 ? normalizeSelectedAccounts(editAccountsList) : null;
       const nextUsername = editUsername.trim() || null;
       setEditingUserAccounts(null); setEditHint(null);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, username: nextUsername as any, assignedAccounts: nextAccounts, session_limit, tvOverride: tvOvOut, features: { ...adminUserFeatures(u), link: editDirectLinkEnabled }, feature_link: editDirectLinkEnabled, ...(expires_at !== undefined ? { expiresAt: expires_at } as any : {}), ...(isFreeTarget ? { autoDelete: editAutoDelete } as any : {}), ...(plan_starts_at !== undefined ? { planStartsAt: plan_starts_at } as any : {}), ...(plan_ends_at !== undefined ? { planEndsAt: plan_ends_at } as any : {}) } as any : u));
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, username: nextUsername as any, assignedAccounts: nextAccounts, session_limit, tvOverride: tvOvOut, ...(expires_at !== undefined ? { expiresAt: expires_at } as any : {}), ...(isFreeTarget ? { autoDelete: editAutoDelete } as any : {}) } : u));
       applyTvOverrideToStoredUser(userId, tvOvOut);
-      patchBootstrapCacheUser(userId, { tvOverride: tvOvOut, features: { ...adminUserFeatures(target), link: editDirectLinkEnabled }, feature_link: editDirectLinkEnabled });
-      try { await refreshBootstrap(); } catch {}
+      patchBootstrapCacheUser(userId, { tvOverride: tvOvOut });
       broadcastTvFeatureEvent({ type: "tv-profile", userId, tvOverride: tvOvOut, at: Date.now() });
       notify.success("User settings updated!");
     } catch (err) {
@@ -9054,10 +6616,7 @@ function AdminPanel() {
     { id: "notifications" as const, label: "Notifications", icon: Bell },
     { id: "inbox" as const, label: "Inbox", icon: Mail },
     { id: "tv" as const, label: "TV Auto-Login", icon: Tv },
-    { id: "cookies" as const, label: "Cookies", icon: Key },
-    { id: "directlink" as const, label: "Direct Link", icon: LinkIcon },
     { id: "security" as const, label: "Security", icon: ShieldCheck },
-
     { id: "emails" as const, label: "Email Accounts", icon: Server },
     { id: "settings" as const, label: "Settings", icon: Settings },
     { id: "deploy" as const, label: "Deploy", icon: Server },
@@ -9075,12 +6634,6 @@ function AdminPanel() {
     if (!q) return tvUsers;
     return tvUsers.filter((u) => `${u.name} ${u.username || ""}`.toLowerCase().includes(q));
   }, [tvSearch, tvUsers]);
-  const [directSearch, setDirectSearch] = useState("");
-  const filteredDirectUsers = useMemo(() => {
-    const q = directSearch.trim().toLowerCase();
-    if (!q) return tvUsers;
-    return tvUsers.filter((u) => `${u.name} ${u.username || ""}`.toLowerCase().includes(q));
-  }, [directSearch, tvUsers]);
 
 
   return (
@@ -9113,7 +6666,7 @@ function AdminPanel() {
           </div>
           <div className="bg-white rounded-2xl border p-4 flex items-center gap-3">
             <div className="bg-purple-50 p-2.5 rounded-xl"><Globe className="w-5 h-5 text-purple-600" /></div>
-            <div><p className="text-2xl font-black text-slate-900">{emailAccounts.length}</p><p className="text-xs text-slate-500">Email Accounts</p></div>
+            <div><p className="text-2xl font-black text-slate-900">{emailAccounts.length + 1}</p><p className="text-xs text-slate-500">Email Accounts</p></div>
           </div>
           <div className="bg-white rounded-2xl border p-4 flex items-center gap-3">
             <div className="bg-amber-50 p-2.5 rounded-xl"><ShieldCheck className="w-5 h-5 text-amber-600" /></div>
@@ -9199,28 +6752,6 @@ function AdminPanel() {
                   </div>
                 )}
 
-                {!newIsFree && (
-                  <div className="rounded-2xl border border-sky-200 bg-sky-50/50 p-3 space-y-3">
-                    <div className="text-[11px] font-bold uppercase tracking-wide text-sky-800">Plan window (optional)</div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Plan starts at</label>
-                      <DateTimePicker value={newPlanStartsAt} onChange={setNewPlanStartsAt} />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Plan ends at</label>
-                      <DateTimePicker value={newPlanEndsAt} onChange={setNewPlanEndsAt} />
-                      <DurationQuickAdd baseDateStr={newPlanStartsAt} onApply={setNewPlanEndsAt} />
-                      <p className="text-[10px] text-slate-500 mt-1">Type a number and pick days/months/years — auto-calculated from Plan Start (or now).</p>
-                    </div>
-                    <p className="text-[10px] text-slate-500">Leave empty = no plan gating. When set, user sees a live countdown pill and is locked out after the end date. Reminders go to admin Telegram in the last 7 days.</p>
-                    {(newPlanStartsAt || newPlanEndsAt) && (
-                      <button type="button" onClick={() => { setNewPlanStartsAt(""); setNewPlanEndsAt(""); }}
-                        className="text-[11px] text-sky-700 hover:underline">Clear plan dates</button>
-                    )}
-                  </div>
-                )}
-
-
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase mb-2">TV Auto-Login</label>
                   <div className="flex gap-2">
@@ -9278,8 +6809,8 @@ function AdminPanel() {
                   const idx = nonAdminIndexById.get(u.id) ?? -1;
                   const isFirst = idx === 0;
                   const isLast = idx === nonAdminOrder.length - 1;
-                  const isAdmin = u.role === "admin";
-                  const roleLabel = isAdmin ? "Administrator" : (u.isFree ? "Free profile" : "Member profile");
+                  const railColor = u.role === "admin" ? "from-red-500 to-red-700" : (u.isFree ? "from-emerald-400 to-emerald-600" : "from-blue-500 to-blue-700");
+                  const glowColor = u.role === "admin" ? "shadow-red-500/20" : (u.isFree ? "shadow-emerald-500/20" : "shadow-blue-500/20");
                   return (
                   <div
                     key={u.id}
@@ -9288,133 +6819,121 @@ function AdminPanel() {
                     onDragOver={(e) => { if (canDrag && dragUserId && dragUserId !== u.id) e.preventDefault(); }}
                     onDrop={(e) => { e.preventDefault(); if (canDrag) onDropUser(u.id); }}
                     onDragEnd={() => setDragUserId(null)}
-                    className={`group relative overflow-hidden rounded-xl border bg-white transition-all min-w-0 ${dragUserId === u.id ? "opacity-60 border-primary shadow-lg" : "border-slate-200 hover:border-slate-300 hover:shadow-md"} ${canDrag ? "sm:cursor-move" : ""}`}
+                    className={`group relative overflow-hidden rounded-2xl bg-white border transition-all min-w-0 ${dragUserId === u.id ? "opacity-50 border-emerald-400 ring-2 ring-emerald-200" : `border-slate-200 hover:border-slate-300 hover:shadow-lg ${glowColor}`} ${canDrag ? "sm:cursor-move" : ""}`}
                   >
-                    <div className="p-4 sm:p-5">
-                      <div className="flex min-w-0 flex-col gap-4">
-                        <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-3.5">
+                    {/* Left color rail */}
+                    <div className={`absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b ${railColor}`} />
+
+                    {/* Role ribbon top-right */}
+                    {u.role === "admin" && (
+                      <div className="absolute top-0 right-0 bg-gradient-to-l from-red-600 to-red-500 text-white text-[9px] font-black tracking-[0.15em] px-3 py-1 rounded-bl-xl shadow-md">ADMIN</div>
+                    )}
+                    {u.isFree && (
+                      <div className="absolute top-0 right-0 bg-gradient-to-l from-emerald-600 to-emerald-500 text-white text-[9px] font-black tracking-[0.15em] px-3 py-1 rounded-bl-xl shadow-md">FREE</div>
+                    )}
+
+                    <div className="p-3.5 sm:p-4 pl-4 sm:pl-5">
+                      <div className="flex items-start gap-3 sm:gap-3.5 min-w-0">
+                        <div className="relative flex-shrink-0">
+                          <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${railColor} blur-md opacity-25`} />
                           <ProfileAvatar
                             avatarId={getStableProfileAvatar(u)}
                             name={u.name}
-                            className="w-12 h-12 sm:w-14 sm:h-14 !rounded-xl border border-slate-200 shadow-sm"
-                            fallbackColor="bg-red-600"
+                            className="relative w-12 h-12 sm:w-14 sm:h-14 !rounded-2xl ring-2 ring-white shadow-md"
+                            fallbackColor={u.role === "admin" ? "bg-red-500" : (u.isFree ? "bg-emerald-500" : "bg-blue-500")}
                           />
-                          <div className="min-w-0">
-                            <div className="min-w-0 space-y-1">
-                              <p className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-black text-slate-950 text-[17px] sm:text-xl tracking-tight leading-tight">{u.name || "Unnamed"}</p>
-                              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                                <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-red-600">{roleLabel}</span>
-                                {u.pinned && (
-                                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-amber-700">Pinned</span>
-                                )}
-                              </div>
-                            </div>
-                            <p className="mt-1 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-slate-500">
-                              {u.username ? `@${u.username}` : "username not set"}
-                            </p>
-                            {!isAdmin && (() => {
-                              const gpsOn = isLocationRequiredForProfile(u);
-                              const ov = u.tvOverride === "on" || u.tvOverride === "off" ? u.tvOverride : null;
-                              const tvOn = ov === "on" ? true : ov === "off" ? false : tvFeatureEnabled;
-                              const f = adminUserFeatures(u);
-                              const gmailOn = f.gmail !== false;
-                              const linkOn = f.link === true;
-                              const accts = u.assignedAccounts || [];
-                              const sessionLimit = (u as any).session_limit;
-                               const expiresAt = (u as any).expiresAt as string | null | undefined;
-                               const planEndsAt = ((u as any).planEndsAt || (u as any).plan_ends_at) as string | null | undefined;
-                               const planStartsAt = ((u as any).planStartsAt || (u as any).plan_starts_at) as string | null | undefined;
-                               const accessSummary = [
-                                 gpsOn ? "Location required" : "Location optional",
-                                 tvOn ? "TV enabled" : "TV disabled",
-                                 gmailOn ? "Gmail enabled" : "Gmail disabled",
-                                 linkOn ? "Direct Link enabled" : "Direct Link disabled",
-                               ].join(" · ");
-                               const sessionSummary = u.isFree && expiresAt
-                                 ? `Free access ends ${new Date(expiresAt).toLocaleDateString()}`
-                                 : !u.isFree && sessionLimit != null
-                                   ? (sessionLimit === 0 ? "Unlimited sessions" : `${sessionLimit} session${sessionLimit === 1 ? "" : "s"} allowed`)
-                                   : "Session limit not set";
-                               const mailboxSummary = accts.length === 0 ? "Not assigned" : `${accts.length} connected`;
-                               // Plan status (paid non-admin only)
-                               let planPill: { label: string; sub: string; tone: "active" | "soon" | "expired" | "pending" | "none" } | null = null;
-                               if (!u.isFree) {
-                                 const now = Date.now();
-                                 const startsMs = planStartsAt ? Date.parse(planStartsAt) : NaN;
-                                 const endsMs = planEndsAt ? Date.parse(planEndsAt) : NaN;
-                                 if (Number.isFinite(endsMs)) {
-                                   if (endsMs <= now) {
-                                     planPill = { label: "No · Expired", sub: `Ended ${new Date(endsMs).toLocaleDateString()}`, tone: "expired" };
-                                   } else if (Number.isFinite(startsMs) && startsMs > now) {
-                                     const days = Math.ceil((startsMs - now) / 86400000);
-                                     planPill = { label: "Pending start", sub: `Starts in ${days}d`, tone: "pending" };
-                                   } else {
-                                     const msLeft = endsMs - now;
-                                     const days = Math.floor(msLeft / 86400000);
-                                     const hours = Math.floor((msLeft % 86400000) / 3600000);
-                                     const left = days > 0 ? `${days}d ${hours}h left` : `${hours}h left`;
-                                     planPill = { label: "Yes · Active", sub: left, tone: days <= 7 ? "soon" : "active" };
-                                   }
-                                 } else {
-                                   planPill = { label: "No · Not set", sub: "No plan dates", tone: "none" };
-                                 }
-                               }
-                               const planToneCls = planPill ? ({
-                                 active:  "border-emerald-200 bg-emerald-50 text-emerald-800",
-                                 soon:    "border-amber-200 bg-amber-50 text-amber-800",
-                                 expired: "border-rose-200 bg-rose-50 text-rose-800",
-                                 pending: "border-sky-200 bg-sky-50 text-sky-800",
-                                 none:    "border-slate-200 bg-slate-50 text-slate-700",
-                               } as const)[planPill.tone] : "";
-                               return (
-                                 <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-slate-600">
-                                   <span className="inline-flex items-center gap-1.5"><span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Mailbox</span><span className="font-semibold text-slate-800">{mailboxSummary}</span></span>
-                                   <span className="h-3 w-px bg-slate-200" aria-hidden />
-                                   <span className="inline-flex items-center gap-1.5"><span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Session</span><span className="font-semibold text-slate-800">{sessionSummary}</span></span>
-                                   {planPill && (
-                                     <>
-                                       <span className="h-3 w-px bg-slate-200" aria-hidden />
-                                       <span className="inline-flex items-center gap-1.5">
-                                         <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Plan</span>
-                                         <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-bold ${planToneCls}`}>
-                                           <span>{planPill.label}</span>
-                                           <span className="opacity-60">·</span>
-                                           <span className="font-semibold">{planPill.sub}</span>
-                                         </span>
-                                       </span>
-                                     </>
-                                   )}
-                                   <span className="h-3 w-px bg-slate-200" aria-hidden />
-                                   <span className="inline-flex items-center gap-1.5"><span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Access</span><span className="font-semibold text-slate-800">{accessSummary}</span></span>
-                                 </div>
-                               );
-                            })()}
-                          </div>
+                          {u.pinned && (
+                            <span className="absolute -top-1.5 -right-1.5 w-6 h-6 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 flex items-center justify-center shadow-md ring-2 ring-white">
+                              <Pin className="w-3 h-3" strokeWidth={3} fill="currentColor" />
+                            </span>
+                          )}
                         </div>
+                        <div className="min-w-0 flex-1 pt-0.5 pr-16 sm:pr-0">
+                          <p className="font-black text-slate-900 truncate text-sm sm:text-base leading-tight tracking-tight">{u.name}</p>
+                          <p className="text-[11px] text-slate-500 truncate mt-0.5 sm:mt-1 font-mono">
+                            {u.username ? `@${u.username}` : "—"}
+                            <span className="mx-1.5 text-slate-300">·</span>
+                            <span className={u.role === "admin" ? "text-red-600 font-bold uppercase" : (u.isFree ? "text-emerald-600 font-bold uppercase" : "text-blue-600 font-bold uppercase")}>{u.isFree ? "free" : u.role}</span>
+                          </p>
+                          <div className="flex flex-wrap gap-1 mt-1.5 sm:mt-2">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); toggleProfileLocationRequired(u); }}
+                              title={isLocationRequiredForProfile(u) ? "GPS required — tap to turn OFF" : "GPS off — tap to turn ON"}
+                              className={`inline-flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded border transition-all active:scale-95 ${isLocationRequiredForProfile(u) ? "bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100" : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"}`}
+                            >
+                              {isLocationRequiredForProfile(u)
+                                ? <><MapPin className="w-2.5 h-2.5" /> GPS</>
+                                : <><MapPinOff className="w-2.5 h-2.5" /> OFF</>}
+                            </button>
+                            {u.role !== "admin" && (() => {
+                              const ov = u.tvOverride === "on" || u.tvOverride === "off" ? u.tvOverride : null;
+                              const effective = ov === "on" ? true : ov === "off" ? false : tvFeatureEnabled;
+                              const label = ov === "on" ? "TV ON" : ov === "off" ? "TV OFF" : (effective ? "TV" : "TV —");
+                              const cls = ov === "on"
+                                ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
+                                : ov === "off"
+                                ? "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200 line-through"
+                                : effective
+                                ? "bg-rose-50/60 text-rose-600 border-rose-100 hover:bg-rose-100"
+                                : "bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200";
+                              const title = `TV Auto-Login for this profile — ${ov ? `forced ${ov.toUpperCase()}` : `inherit global (${tvFeatureEnabled ? "ON" : "OFF"})`}. Tap to cycle: inherit → on → off.`;
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); toggleProfileTvOverride(u); }}
+                                  title={title}
+                                  className={`inline-flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded border transition-all active:scale-95 ${cls}`}
+                                >
+                                  <Tv className="w-2.5 h-2.5" /> {label}
+                                </button>
+                              );
+                            })()}
+                            {u.assignedAccounts && u.assignedAccounts.length > 0 && u.assignedAccounts.map((a: string) => (
+                              <span key={a} className="bg-blue-50 text-blue-700 border border-blue-200 text-[10px] px-1.5 py-0.5 rounded font-bold font-mono">{a}</span>
+                            ))}
+                            {(!u.assignedAccounts || u.assignedAccounts.length === 0) && u.role !== "admin" && (
+                              <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded font-bold">no accounts</span>
+                            )}
+                          </div>
+                          {u.role !== "admin" && !u.isFree && (u as any).session_limit != null && (
+                            <p className="text-[10px] text-emerald-700 mt-1.5 font-mono">
+                              sessions: <span className="font-bold">{(u as any).session_limit === 0 ? "∞" : (u as any).session_limit}</span>
+                            </p>
+                          )}
+                          {u.isFree && (u as any).expiresAt && (
+                            <p className="text-[10px] text-emerald-700 mt-1.5 font-mono truncate">
+                              expires: <span className="font-bold">{new Date((u as any).expiresAt).toLocaleString()}</span>
+                            </p>
+                          )}
+                        </div>
+                      </div>
 
-                       {!isAdmin && (
-                         <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-3">
-                           <button onClick={() => moveUser(u.id, -1)} disabled={isFirst || reordering} title="Move up"
-                             className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 transition disabled:opacity-40 disabled:cursor-not-allowed">
-                             Move up
-                           </button>
-                           <button onClick={() => moveUser(u.id, 1)} disabled={isLast || reordering} title="Move down"
-                             className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 transition disabled:opacity-40 disabled:cursor-not-allowed">
-                             Move down
-                           </button>
-                           <button onClick={() => togglePinnedUser(u)} title={u.pinned ? "Unpin" : "Pin"}
-                             className={`h-8 rounded-md border px-2.5 text-[11px] font-semibold transition ${u.pinned ? "border-amber-300 bg-amber-50 text-amber-800" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>
-                             {u.pinned ? "Unpin" : "Pin"}
-                           </button>
-                           <button onClick={() => toggleProfileLocationRequired(u)} title={isLocationRequiredForProfile(u) ? "GPS on" : "GPS off"}
-                             className={`h-8 rounded-md border px-2.5 text-[11px] font-semibold transition ${isLocationRequiredForProfile(u) ? "border-red-200 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>
-                             {isLocationRequiredForProfile(u) ? "Location on" : "Location off"}
-                           </button>
-                           <button onClick={() => loginAsUser(u)} title="View as user"
-                             className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 transition">
-                             View
-                           </button>
-                           <button onClick={() => {
+                      {u.role !== "admin" && (
+                        <div className="mt-3 flex items-center gap-0.5 sm:gap-1 p-1 rounded-xl bg-gradient-to-br from-slate-50 to-slate-100/60 border border-slate-200/80">
+                          <button onClick={() => moveUser(u.id, -1)} disabled={isFirst || reordering} title="Move up"
+                            className="flex-1 flex items-center justify-center h-9 rounded-lg text-slate-500 hover:bg-white hover:text-indigo-600 hover:shadow-sm transition-all active:scale-95 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500 disabled:cursor-not-allowed">
+                            <ChevronUp className="w-4 h-4" strokeWidth={2.5} />
+                          </button>
+                          <button onClick={() => moveUser(u.id, 1)} disabled={isLast || reordering} title="Move down"
+                            className="flex-1 flex items-center justify-center h-9 rounded-lg text-slate-500 hover:bg-white hover:text-indigo-600 hover:shadow-sm transition-all active:scale-95 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500 disabled:cursor-not-allowed">
+                            <ChevronDown className="w-4 h-4" strokeWidth={2.5} />
+                          </button>
+                          <div className="w-px h-6 bg-slate-200" />
+                          <button onClick={() => togglePinnedUser(u)} title={u.pinned ? "Unpin" : "Pin to top"}
+                            className={`flex-1 flex items-center justify-center h-9 rounded-lg transition-all active:scale-95 ${u.pinned ? "bg-white text-amber-600 ring-1 ring-amber-300 shadow-sm" : "text-slate-500 hover:bg-white hover:text-amber-600 hover:shadow-sm"}`}>
+                            <Pin className="w-4 h-4" strokeWidth={2.5} fill={u.pinned ? "currentColor" : "none"} />
+                          </button>
+                          <button onClick={() => toggleProfileLocationRequired(u)} title={isLocationRequiredForProfile(u) ? "GPS on" : "GPS off"}
+                            className={`flex-1 flex items-center justify-center h-9 rounded-lg transition-all active:scale-95 ${isLocationRequiredForProfile(u) ? "bg-white text-sky-600 ring-1 ring-sky-300 shadow-sm" : "text-slate-500 hover:bg-white hover:text-sky-600 hover:shadow-sm"}`}>
+                            {isLocationRequiredForProfile(u) ? <MapPin className="w-4 h-4" /> : <MapPinOff className="w-4 h-4" />}
+                          </button>
+                          <div className="w-px h-6 bg-slate-200" />
+                          <button onClick={() => loginAsUser(u)} title="View as user"
+                            className="flex-1 flex items-center justify-center h-9 rounded-lg text-slate-500 hover:bg-white hover:text-blue-600 hover:shadow-sm transition-all active:scale-95">
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => {
                               const opening = editingUserAccounts !== u.id;
                               setEditingUserAccounts(opening ? u.id : null);
                               setEditUsername(u.username || "");
@@ -9430,86 +6949,24 @@ function AdminPanel() {
                                 setEditExpiresAt("");
                               }
                               setEditAutoDelete((u as any).autoDelete !== false);
-                              const toLocalInput = (iso: string | null | undefined): string => {
-                                if (!iso) return "";
-                                const d = new Date(iso);
-                                const pad = (n: number) => String(n).padStart(2, "0");
-                                return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-                              };
-                              setEditPlanStartsAt(toLocalInput((u as any).planStartsAt));
-                              setEditPlanEndsAt(toLocalInput((u as any).planEndsAt));
                               const ovInit = (u as any).tvOverride;
                               setEditTvOverride(ovInit === "on" ? "on" : ovInit === "off" ? "off" : "inherit");
-                              setEditDirectLinkEnabled(adminUserFeatures(u).link === true);
-                           }} title="Edit"
-                             className={`h-8 rounded-md border px-2.5 text-[11px] font-semibold transition ${editingUserAccounts === u.id ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>
-                             Edit
-                           </button>
-                           {!u.isFree && (
-                             <button onClick={() => { setChangingUserPass(changingUserPass === u.id ? null : u.id); setUserNewPass(""); }} title="Change password"
-                               className={`h-8 rounded-md border px-2.5 text-[11px] font-semibold transition ${changingUserPass === u.id ? "border-amber-300 bg-amber-50 text-amber-800" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>
-                               Password
-                             </button>
-                           )}
-                           <button onClick={() => setDeleteConfirmUser(u)} title="Delete"
-                             className="ml-auto h-8 rounded-md border border-red-200 bg-red-50 px-2.5 text-[11px] font-semibold text-red-700 hover:bg-red-100 transition">
-                             Delete
-                           </button>
-                         </div>
-                       )}
+                            }} title="Edit"
+                            className={`flex-1 flex items-center justify-center h-9 rounded-lg transition-all active:scale-95 ${editingUserAccounts === u.id ? "bg-white text-emerald-600 ring-1 ring-emerald-300 shadow-sm" : "text-slate-500 hover:bg-white hover:text-emerald-600 hover:shadow-sm"}`}>
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          {!u.isFree && (
+                            <button onClick={() => { setChangingUserPass(changingUserPass === u.id ? null : u.id); setUserNewPass(""); }} title="Change password"
+                              className={`flex-1 flex items-center justify-center h-9 rounded-lg transition-all active:scale-95 ${changingUserPass === u.id ? "bg-white text-amber-600 ring-1 ring-amber-300 shadow-sm" : "text-slate-500 hover:bg-white hover:text-amber-600 hover:shadow-sm"}`}>
+                              <KeyRound className="w-4 h-4" />
+                            </button>
+                          )}
+                          <div className="w-px h-6 bg-slate-200" />
+                          <button onClick={() => setDeleteConfirmUser(u)} title="Delete user"
+                            className="flex-1 flex items-center justify-center h-9 rounded-lg text-slate-500 hover:bg-red-50 hover:text-red-600 hover:shadow-sm transition-all active:scale-95">
 
-                       {isAdmin && (
-                         <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-3">
-                           <button onClick={() => toggleProfileLocationRequired(u)}
-                             title={isLocationRequiredForProfile(u) ? "GPS required" : "GPS off"}
-                             className={`h-8 rounded-md border px-2.5 text-[11px] font-semibold transition ${isLocationRequiredForProfile(u) ? "border-red-200 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>
-                             {isLocationRequiredForProfile(u) ? "Location on" : "Location off"}
-                           </button>
-                           {currentUser?.id !== u.id && (
-                             <button onClick={() => loginAsUser(u)} title="Sign in as admin"
-                               className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 transition">
-                               View
-                             </button>
-                           )}
-                           <button onClick={() => {
-                               const opening = editingUserAccounts !== u.id;
-                               setEditingUserAccounts(opening ? u.id : null);
-                               setEditUsername(u.username || "");
-                             }} title="Edit admin"
-                             className={`h-8 rounded-md border px-2.5 text-[11px] font-semibold transition ${editingUserAccounts === u.id ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>
-                             Edit
-                           </button>
-                           <button onClick={() => { setChangingUserPass(changingUserPass === u.id ? null : u.id); setUserNewPass(""); }}
-                             title="Change password"
-                             className={`h-8 rounded-md border px-2.5 text-[11px] font-semibold transition ${changingUserPass === u.id ? "border-amber-300 bg-amber-50 text-amber-800" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>
-                             Password
-                           </button>
-                         </div>
-                       )}
-
-                      {editingUserAccounts === u.id && u.role === "admin" && (
-                        <div className="mt-2 p-3.5 rounded-xl border border-slate-200 bg-white shadow-sm space-y-2.5">
-                          <label className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500 flex items-center gap-1.5">
-                            <UserCircle className="w-3.5 h-3.5 text-red-600" /> Admin username
-                          </label>
-                          <input type="text" value={editUsername} onChange={(e) => setEditUsername(e.target.value)}
-                            placeholder="e.g. admin"
-                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm font-semibold text-slate-900 outline-none focus:border-red-500 focus:bg-white focus:ring-2 focus:ring-red-100 transition-all" />
-                          <div className="flex gap-2 pt-1">
-                            <button onClick={() => setEditingUserAccounts(null)}
-                              className="flex-1 h-9 rounded-lg border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50 active:scale-95 transition-all">Cancel</button>
-                            <button onClick={async () => {
-                                try {
-                                  const next = editUsername.trim() || null;
-                                  await apiCall("manage-app", { action: "update_user", id: u.id, username: next });
-                                  setUsers(prev => prev.map(x => x.id === u.id ? { ...x, username: next as any } : x));
-                                  setEditingUserAccounts(null);
-                                  try { await refreshBootstrap(); } catch {}
-                                  notify.success("Admin updated");
-                                } catch (err) { notify.error(err instanceof Error ? err.message : "Failed to update"); }
-                              }}
-                              className="flex-1 h-9 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold active:scale-95 transition-all shadow-sm shadow-red-200">Save</button>
-                          </div>
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       )}
 
@@ -9614,267 +7071,243 @@ function AdminPanel() {
 
 
                     {editingUserAccounts === u.id && u.role !== "admin" && createPortal(
-                      <div className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center animate-in fade-in duration-200 font-['Manrope',system-ui,sans-serif] px-0 sm:px-4"
+                      <div className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center animate-in fade-in duration-200"
                           onClick={() => { setEditingUserAccounts(null); setEditHint(null); }}
                         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-                        <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-lg" />
+                        <div className="absolute inset-0 bg-gradient-to-br from-slate-950/70 via-rose-950/60 to-slate-950/70 backdrop-blur-xl" />
                         <div onClick={(e) => e.stopPropagation()}
-                          className="relative w-full sm:max-w-xl lg:max-w-2xl max-h-[96vh] sm:max-h-[90vh] overflow-hidden bg-white sm:rounded-3xl rounded-t-3xl shadow-[0_50px_120px_-20px_rgba(0,0,0,0.5)] animate-in slide-in-from-bottom-8 sm:zoom-in-95 duration-300 flex flex-col">
-
-                          {/* Ticket-style top: red barcode strip */}
-                          <div className="relative flex-shrink-0">
-                            <div className="h-2 bg-gradient-to-r from-red-600 via-rose-500 to-red-600" />
-                            <div className="flex items-center justify-between px-5 sm:px-7 py-2.5 bg-white border-b border-dashed border-slate-200">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse" />
-                                <span className="text-[10px] font-black tracking-[0.35em] text-slate-900 uppercase">Edit · Profile</span>
+                          className="relative w-full sm:max-w-md max-h-[92vh] sm:max-h-[88vh] overflow-hidden bg-white sm:rounded-3xl rounded-t-3xl shadow-[0_-20px_80px_-10px_rgba(0,0,0,0.4)] sm:shadow-[0_30px_120px_-30px_rgba(244,63,94,0.5)] ring-1 ring-white/40 animate-in slide-in-from-bottom-8 sm:zoom-in-95 duration-300 flex flex-col">
+                          {/* Mobile grab handle */}
+                          <div className="sm:hidden flex justify-center pt-2.5 pb-1"><div className="w-10 h-1 rounded-full bg-slate-300" /></div>
+                          {/* Header */}
+                          <div className="relative overflow-hidden px-5 pt-5 pb-16 bg-gradient-to-br from-rose-500 via-red-600 to-orange-600">
+                            <div className="absolute inset-0 opacity-30" style={{ backgroundImage: "radial-gradient(circle at 20% 20%, rgba(255,255,255,0.4) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(255,255,255,0.2) 0%, transparent 50%)" }} />
+                            <div className="absolute -top-10 -right-10 w-48 h-48 rounded-full bg-white/15 blur-3xl" />
+                            <div className="absolute -bottom-12 -left-8 w-40 h-40 rounded-full bg-white/10 blur-3xl" />
+                            <div className="relative flex items-start justify-between">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="relative flex-shrink-0">
+                                  <div className="absolute inset-0 bg-white/40 rounded-2xl blur-md" />
+                                  <ProfileAvatar avatarId={getStableProfileAvatar(u)} name={u.name}
+                                    className="relative w-12 h-12 !rounded-2xl ring-2 ring-white/60 shadow-xl" />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-[9px] font-black tracking-[0.3em] text-white/80 uppercase mb-0.5">✎ Edit Profile</p>
+                                  <p className="text-white font-black text-lg leading-tight truncate">{u.name}</p>
+                                  <p className="text-white/70 text-[11px] font-mono truncate">{u.username ? `@${u.username}` : "no username"}</p>
+                                </div>
                               </div>
                               <button onClick={() => { setEditingUserAccounts(null); setEditHint(null); }}
-                                className="flex-shrink-0 w-8 h-8 rounded-full bg-slate-100 hover:bg-red-600 text-slate-600 hover:text-white flex items-center justify-center transition-all active:scale-90">
+                                className="flex-shrink-0 w-9 h-9 rounded-2xl bg-white/20 hover:bg-white/35 text-white flex items-center justify-center transition-all active:scale-90 backdrop-blur-sm ring-1 ring-white/30">
                                 <X className="w-4 h-4" strokeWidth={2.5} />
                               </button>
                             </div>
                           </div>
-
-                          {/* Profile hero: minimal, no gradient */}
-                          <div className="flex-shrink-0 px-5 sm:px-7 pt-5 sm:pt-6 pb-4 sm:pb-5 bg-white flex items-center gap-4 border-b border-slate-100">
-                            <div className="relative flex-shrink-0">
-                              <ProfileAvatar avatarId={getStableProfileAvatar(u)} name={u.name}
-                                className="w-16 h-16 sm:w-20 sm:h-20 !rounded-2xl ring-1 ring-slate-200 shadow-md" />
-                              <span className="absolute -top-1.5 -right-1.5 px-1.5 py-0.5 rounded-md bg-red-600 text-white text-[8px] font-black tracking-widest uppercase shadow-md">{u.isFree ? "Free" : ((u as any).role === "admin" ? "Admin" : "Pro")}</span>
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <h2 className="text-slate-900 font-black text-2xl sm:text-3xl leading-none tracking-tight truncate font-['Sora',system-ui,sans-serif]">{u.name}</h2>
-                              <p className="text-slate-500 text-xs sm:text-sm font-mono truncate mt-1.5">{u.username ? `@${u.username}` : "no username set"}</p>
-                            </div>
-                          </div>
-
                           {/* Body */}
-                          <div className="relative flex-1 overflow-y-auto bg-slate-50/60 px-4 sm:px-7 py-5 space-y-4">
-
-                              {/* Identity */}
-                              <section className="bg-white rounded-2xl p-4 sm:p-5 ring-1 ring-slate-200/70 hover:ring-red-200 transition-all">
-                                <div className="flex items-center justify-between mb-2.5">
-                                  <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.15em] text-slate-900">
-                                    <UserCircle className="w-4 h-4 text-red-600" />
-                                    Username {u.isFree && <span className="text-slate-400 normal-case tracking-normal font-medium">· optional</span>}
+                          <div className="relative -mt-10 flex-1 overflow-y-auto px-4 sm:px-5 pb-4">
+                            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl shadow-slate-300/40 p-4 space-y-5">
+                              {/* Username */}
+                              <div>
+                                <div className="flex items-center justify-between mb-2">
+                                  <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                                    <UserCircle className="w-4 h-4 text-rose-500" />
+                                    Username {u.isFree && <span className="text-[10px] font-normal text-slate-400">(optional)</span>}
                                   </label>
                                   <button type="button" onClick={() => setEditHint(editHint === "user" ? null : "user")}
-                                    className={`w-6 h-6 rounded-full flex items-center justify-center transition ${editHint === "user" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-600"}`}>
-                                    <Info className="w-3 h-3" />
+                                    className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${editHint === "user" ? "bg-rose-500 text-white" : "bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600"}`} title="What is this?">
+                                    <Info className="w-3.5 h-3.5" />
                                   </button>
                                 </div>
                                 <input type="text" value={editUsername} onChange={(e) => setEditUsername(e.target.value)}
                                   placeholder={u.isFree ? "No username needed" : "e.g. john123"}
-                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-red-500 focus:bg-white focus:ring-4 focus:ring-red-100 text-sm font-semibold text-slate-900 placeholder:text-slate-400 transition-all" />
+                                  className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl px-3 py-3 outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-500 text-sm font-medium text-slate-900 placeholder:text-slate-400 transition-all" />
                                 {editHint === "user" && (
-                                  <p className="mt-2 text-[11px] text-slate-700 bg-red-50 border-l-2 border-red-500 rounded-r-md px-3 py-2 leading-snug">The name this user types to log in.</p>
+                                  <p className="mt-1.5 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 leading-snug">The name this user types to log in — like a nickname.</p>
                                 )}
-                              </section>
+                              </div>
 
-                              {/* Mailbox */}
-                              <section className="bg-white rounded-2xl p-4 sm:p-5 ring-1 ring-slate-200/70 hover:ring-red-200 transition-all">
-                                <div className="flex items-center justify-between mb-2.5">
-                                  <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.15em] text-slate-900">
-                                    <Mail className="w-4 h-4 text-red-600" />
-                                    Mailbox Access
+                              {/* IMAP Accounts */}
+                              <div>
+                                <div className="flex items-center justify-between mb-2">
+                                  <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                                    <Mail className="w-4 h-4 text-rose-500" />
+                                    Which mailboxes can they see?
                                   </label>
-                                  <span className="text-[10px] font-mono text-slate-400">{editAccountsList.length}/{availableAccounts.length}</span>
+                                  <button type="button" onClick={() => setEditHint(editHint === "mail" ? null : "mail")}
+                                    className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${editHint === "mail" ? "bg-rose-500 text-white" : "bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600"}`} title="What is this?">
+                                    <Info className="w-3.5 h-3.5" />
+                                  </button>
                                 </div>
-                                <p className="text-[11px] text-slate-500 mb-3">Tap to allow · tap again to hide</p>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
+                                {editHint === "mail" && (
+                                  <p className="mb-2 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 leading-snug">Tick a mailbox = user can open it. Untick = hidden from them.</p>
+                                )}
+                                <p className="text-[11px] text-slate-500 mb-2">Tap a box to allow · untap to hide</p>
+                                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                                   {availableAccounts.map(label => {
                                     const checked = editAccountsList.includes(label);
                                     return (
-                                      <button key={label} type="button"
-                                        onClick={() => {
-                                          if (checked) setEditAccountsList(editAccountsList.filter(a => a !== label));
-                                          else setEditAccountsList([...editAccountsList, label]);
-                                        }}
-                                        className={`group flex items-center gap-2.5 p-3 rounded-xl text-left transition-all border ${checked ? "bg-red-600 border-red-600 shadow-md shadow-red-200" : "bg-white border-slate-200 hover:border-red-300"}`}>
-                                        <span className={`shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-all ${checked ? "bg-white" : "bg-slate-100 group-hover:bg-red-50"}`}>
-                                          {checked && <Check className="w-3.5 h-3.5 text-red-600" strokeWidth={4} />}
-                                        </span>
-                                        <span className={`text-[13px] truncate flex-1 font-bold ${checked ? "text-white" : "text-slate-800"}`}>{label}</span>
+                                      <label key={label} className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all border-2 ${checked ? "bg-gradient-to-r from-rose-50 to-red-50 border-rose-300 shadow-sm" : "bg-slate-50 border-transparent hover:bg-slate-100"}`}>
+                                        <input type="checkbox" checked={checked}
+                                          onChange={(e) => {
+                                            if (e.target.checked) setEditAccountsList([...editAccountsList, label]);
+                                            else setEditAccountsList(editAccountsList.filter(a => a !== label));
+                                          }}
+                                          className="w-5 h-5 rounded border-slate-300 text-rose-600 focus:ring-rose-500" />
+                                        <span className={`text-sm truncate flex-1 ${checked ? "text-rose-900 font-bold" : "text-slate-700 font-medium"}`}>{label}</span>
+                                        {checked && <span className="text-[10px] font-black text-rose-600 bg-white px-2 py-0.5 rounded-full ring-1 ring-rose-200">ALLOWED</span>}
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              {/* Session Limit */}
+                              {!u.isFree && (
+                                <div>
+                                  <div className="flex items-center justify-between mb-2">
+                                    <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                                      <Users className="w-4 h-4 text-rose-500" />
+                                      How many devices at once?
+                                    </label>
+                                    <button type="button" onClick={() => setEditHint(editHint === "sess" ? null : "sess")}
+                                      className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${editHint === "sess" ? "bg-rose-500 text-white" : "bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600"}`} title="What is this?">
+                                      <Info className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  {editHint === "sess" && (
+                                    <p className="mb-2 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 leading-snug">Set 2 = user can log in on max 2 devices. A 3rd login kicks out the oldest.</p>
+                                  )}
+                                  <input type="number" min={0} max={50} step={1} value={editSessionLimit}
+                                    onChange={(e) => setEditSessionLimit(e.target.value)}
+                                    placeholder="Leave empty for default"
+                                    className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl px-3 py-3 outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-500 text-sm font-medium" />
+                                  <div className="grid grid-cols-3 gap-1.5 mt-2">
+                                    <button type="button" onClick={() => setEditSessionLimit("")}
+                                      className={`text-[10px] font-bold py-2 rounded-lg border transition-all ${editSessionLimit === "" ? "bg-rose-100 border-rose-300 text-rose-700" : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"}`}>
+                                      Default
+                                    </button>
+                                    <button type="button" onClick={() => setEditSessionLimit("0")}
+                                      className={`text-[10px] font-bold py-2 rounded-lg border transition-all ${editSessionLimit === "0" ? "bg-rose-100 border-rose-300 text-rose-700" : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"}`}>
+                                      Unlimited
+                                    </button>
+                                    <button type="button" onClick={() => setEditSessionLimit("1")}
+                                      className={`text-[10px] font-bold py-2 rounded-lg border transition-all ${editSessionLimit === "1" ? "bg-rose-100 border-rose-300 text-rose-700" : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"}`}>
+                                      Only 1
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* TV Auto-Login override (syncs with TV Remote Access tab) */}
+                              <div>
+                                <div className="flex items-center justify-between mb-2">
+                                  <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                                    <Tv className="w-4 h-4 text-rose-500" />
+                                    TV button for this person
+                                  </label>
+                                  {editTvOverride !== "inherit" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditTvOverride("inherit")}
+                                      className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline underline-offset-2"
+                                    >
+                                      Same as everyone
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="inline-flex w-full p-0.5 rounded-full bg-slate-100 border border-slate-200">
+                                  {([
+                                    { value: "on" as const,  label: "Show", Icon: Eye,    onCls: "bg-emerald-500 text-white shadow-sm" },
+                                    { value: "off" as const, label: "Hide", Icon: EyeOff, onCls: "bg-slate-900 text-white shadow-sm" },
+                                  ]).map((opt) => {
+                                    const active = editTvOverride === opt.value;
+                                    const Icon = opt.Icon;
+                                    return (
+                                      <button
+                                        key={opt.value}
+                                        type="button"
+                                        onClick={() => setEditTvOverride(opt.value)}
+                                        className={`flex-1 inline-flex items-center justify-center gap-1.5 h-9 rounded-full text-[12px] font-bold transition-all active:scale-[0.97] ${active ? opt.onCls : "text-slate-500 hover:text-slate-800"}`}
+                                        aria-pressed={active}
+                                      >
+                                        <Icon className="w-3.5 h-3.5" />
+                                        <span>{opt.label}</span>
                                       </button>
                                     );
                                   })}
                                 </div>
-                              </section>
-
-                              {/* Devices */}
-                              {!u.isFree && (
-                                <section className="bg-white rounded-2xl p-4 sm:p-5 ring-1 ring-slate-200/70 hover:ring-red-200 transition-all">
-                                  <div className="flex items-center justify-between mb-3">
-                                    <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.15em] text-slate-900">
-                                      <Users className="w-4 h-4 text-red-600" />
-                                      Concurrent Devices
-                                    </label>
-                                    <button type="button" onClick={() => setEditHint(editHint === "sess" ? null : "sess")}
-                                      className={`w-6 h-6 rounded-full flex items-center justify-center transition ${editHint === "sess" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-600"}`}>
-                                      <Info className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                  {editHint === "sess" && (
-                                    <p className="mb-3 text-[11px] text-slate-700 bg-red-50 border-l-2 border-red-500 rounded-r-md px-3 py-2 leading-snug">Set 2 = user can log in on max 2 devices. A 3rd login kicks out the oldest.</p>
-                                  )}
-                                  <div className="flex flex-col sm:flex-row gap-2">
-                                    <input type="number" min={0} max={50} step={1} value={editSessionLimit}
-                                      onChange={(e) => setEditSessionLimit(e.target.value)}
-                                      placeholder="Default"
-                                      className="sm:w-24 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-red-500 focus:bg-white focus:ring-4 focus:ring-red-100 text-center text-lg font-black text-slate-900 placeholder:text-slate-400 transition-all" />
-                                    <div className="grid grid-cols-3 gap-1.5 flex-1">
-                                      {[
-                                        { v: "", label: "Default" },
-                                        { v: "0", label: "∞ Unlimited" },
-                                        { v: "1", label: "Only 1" },
-                                      ].map(o => (
-                                        <button key={o.v} type="button" onClick={() => setEditSessionLimit(o.v)}
-                                          className={`text-[10px] font-black py-2.5 rounded-lg transition-all uppercase tracking-wider border ${editSessionLimit === o.v ? "bg-red-600 border-red-600 text-white shadow-md shadow-red-200" : "bg-white border-slate-200 text-slate-600 hover:border-red-400 hover:text-red-600"}`}>
-                                          {o.label}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </div>
-                                </section>
-                              )}
-
-                              {/* Feature toggles — grid */}
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <section className="bg-white rounded-2xl p-4 sm:p-5 ring-1 ring-slate-200/70 hover:ring-red-200 transition-all">
-                                  <div className="flex items-center justify-between mb-3">
-                                    <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.15em] text-slate-900">
-                                      <Tv className="w-4 h-4 text-red-600" />
-                                      TV Presence
-                                    </label>
-                                    {editTvOverride !== "inherit" && (
-                                      <button type="button" onClick={() => setEditTvOverride("inherit")}
-                                        className="text-[9px] font-black text-slate-500 hover:text-red-600 uppercase tracking-wider transition-colors">Reset</button>
-                                    )}
-                                  </div>
-                                  <div className="flex bg-slate-100 p-1 rounded-xl">
-                                    {([
-                                      { value: "on" as const,  label: "Show", Icon: Eye },
-                                      { value: "off" as const, label: "Hide", Icon: EyeOff },
-                                    ]).map((opt) => {
-                                      const active = editTvOverride === opt.value;
-                                      const Icon = opt.Icon;
-                                      return (
-                                        <button key={opt.value} type="button" onClick={() => setEditTvOverride(opt.value)}
-                                          className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-lg text-[11px] font-black transition-all active:scale-[0.97] uppercase tracking-wider ${active ? "bg-white text-red-600 shadow-sm ring-1 ring-red-200" : "text-slate-500 hover:text-slate-800"}`}
-                                          aria-pressed={active}>
-                                          <Icon className="w-3.5 h-3.5" />
-                                          {opt.label}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                  <p className="text-[11px] text-slate-500 mt-2 leading-snug">
-                                    {editTvOverride === "inherit"
-                                      ? <>Follows global ({tvFeatureEnabled ? "visible" : "hidden"})</>
-                                      : editTvOverride === "on" ? "Always visible." : "Always hidden."}
-                                  </p>
-                                </section>
-
-                                <section className="bg-white rounded-2xl p-4 sm:p-5 ring-1 ring-slate-200/70 hover:ring-red-200 transition-all">
-                                  <div className="flex items-center justify-between mb-3 gap-2">
-                                    <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.15em] text-slate-900 min-w-0">
-                                      <LinkIcon className="w-4 h-4 text-red-600 shrink-0" />
-                                      <span className="truncate">Direct Link</span>
-                                    </label>
-                                    <span className={`shrink-0 px-2 py-0.5 rounded-md text-[9px] font-black tracking-widest uppercase ${editDirectLinkEnabled ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-500"}`}>
-                                      {editDirectLinkEnabled ? "On" : "Off"}
-                                    </span>
-                                  </div>
-                                  <button type="button" onClick={() => setEditDirectLinkEnabled((v) => !v)}
-                                    aria-pressed={editDirectLinkEnabled}
-                                    className={`relative w-full h-11 rounded-xl transition-all overflow-hidden ${editDirectLinkEnabled ? "bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-md shadow-emerald-200" : "bg-slate-200"}`}>
-                                    <span className={`absolute top-1 w-9 h-9 rounded-lg bg-white shadow-md flex items-center justify-center transition-all ${editDirectLinkEnabled ? "left-[calc(100%-2.5rem)]" : "left-1"}`}>
-                                      {editDirectLinkEnabled ? <Check className="w-4 h-4 text-emerald-600" strokeWidth={3.5} /> : <X className="w-4 h-4 text-slate-500" strokeWidth={3.5} />}
-                                    </span>
-                                    <span className={`absolute inset-0 flex items-center text-[11px] font-black uppercase tracking-widest ${editDirectLinkEnabled ? "justify-start pl-4 text-white" : "justify-end pr-4 text-slate-500"}`}>
-                                      {editDirectLinkEnabled ? "Enabled" : "Disabled"}
-                                    </span>
-                                  </button>
-                                  <p className="text-[11px] text-slate-500 mt-2 leading-snug">
-                                    {editDirectLinkEnabled ? "User can generate Netflix links." : "Direct Link workflow is hidden."}
-                                  </p>
-                                </section>
+                                <p className="mt-1.5 text-[11px] text-slate-500">
+                                  {editTvOverride === "inherit"
+                                    ? <>Follows the global switch ({tvFeatureEnabled ? "currently visible" : "currently hidden"}).</>
+                                    : editTvOverride === "on"
+                                    ? "Always visible for this profile."
+                                    : "Always hidden for this profile."}
+                                </p>
                               </div>
+
+
 
                               {/* Free profile expiry */}
                               {u.isFree && (
-                                <section className="bg-white rounded-2xl p-4 sm:p-5 ring-1 ring-slate-200/70 hover:ring-red-200 transition-all">
-                                  <div className="flex items-center justify-between mb-3">
-                                    <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.15em] text-slate-900">
-                                      <Clock className="w-4 h-4 text-red-600" />
-                                      Auto-Delete Date
+                                <div>
+                                  <div className="flex items-center justify-between mb-2">
+                                    <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                                      <Clock className="w-4 h-4 text-rose-500" />
+                                      Auto-delete this profile on
                                     </label>
+                                    <button type="button" onClick={() => setEditHint(editHint === "exp" ? null : "exp")}
+                                      className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${editHint === "exp" ? "bg-rose-500 text-white" : "bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600"}`} title="What is this?">
+                                      <Info className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  {editHint === "exp" && (
+                                    <p className="mb-2 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 leading-snug">Pick a date — this free profile auto-deletes then. Empty = never.</p>
+                                  )}
+                                  <DateTimePicker value={editExpiresAt} onChange={setEditExpiresAt} />
+                                  <div className="flex items-center justify-between mt-1.5">
+                                    <p className="text-[11px] text-slate-500">Empty = keeps forever</p>
                                     {editExpiresAt && (
                                       <button type="button" onClick={() => setEditExpiresAt("")}
-                                        className="text-[9px] font-black text-slate-500 hover:text-red-600 uppercase tracking-wider transition-colors">Clear</button>
+                                        className="text-[11px] text-rose-600 font-bold hover:underline">Clear date</button>
                                     )}
                                   </div>
-                                  <DateTimePicker value={editExpiresAt} onChange={setEditExpiresAt} />
-                                  <p className="text-[11px] text-slate-500 mt-2">Empty = keep forever</p>
-                                </section>
+                                </div>
                               )}
 
+                              {/* Free profile auto-delete toggle */}
                               {u.isFree && (
-                                <section className="bg-white rounded-2xl p-4 sm:p-5 ring-1 ring-slate-200/70 flex items-center justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="text-[13px] font-black text-slate-900">Show expiry pill</div>
-                                    <div className="text-[11px] text-slate-500 leading-snug mt-0.5">
-                                      {editAutoDelete ? "Live countdown visible to user." : "Countdown hidden."}
+                                <div>
+                                  <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-bold text-slate-800">Show expiry pill to user</div>
+                                      <div className="text-[11px] text-slate-500 leading-snug">
+                                        {editAutoDelete
+                                          ? "User sees a live countdown pill until expiry."
+                                          : "Pill hidden — user won't see any countdown."}
+                                      </div>
                                     </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditAutoDelete((v) => !v)}
+                                      aria-pressed={editAutoDelete}
+                                      className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${editAutoDelete ? "bg-emerald-500" : "bg-slate-300"}`}
+                                      title="Toggle auto-delete"
+                                    >
+                                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${editAutoDelete ? "translate-x-5" : ""}`} />
+                                    </button>
                                   </div>
-                                  <button type="button" onClick={() => setEditAutoDelete((v) => !v)}
-                                    aria-pressed={editAutoDelete}
-                                    className={`relative shrink-0 w-14 h-8 rounded-full transition-colors ${editAutoDelete ? "bg-emerald-500" : "bg-slate-300"}`}>
-                                    <span className={`absolute top-1 w-6 h-6 rounded-full bg-white shadow-md transition-transform ${editAutoDelete ? "translate-x-7" : "translate-x-1"}`} />
-                                  </button>
-                                </section>
+                                </div>
                               )}
-
-                              {/* Plan window */}
-                              {!u.isFree && (u as any).role !== "admin" && (
-                                <section className="bg-white rounded-2xl p-4 sm:p-5 ring-2 ring-red-500 shadow-md shadow-red-100">
-                                  <div className="flex items-center justify-between mb-4">
-                                    <label className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.15em] text-red-700">
-                                      <Clock className="w-4 h-4" />
-                                      Plan Window
-                                    </label>
-                                    {(editPlanStartsAt || editPlanEndsAt) && (
-                                      <button type="button" onClick={() => { setEditPlanStartsAt(""); setEditPlanEndsAt(""); }}
-                                        className="text-[9px] font-black text-slate-500 hover:text-red-600 uppercase tracking-wider transition-colors">Clear</button>
-                                    )}
-                                  </div>
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <div>
-                                      <label className="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Starts</label>
-                                      <DateTimePicker value={editPlanStartsAt} onChange={setEditPlanStartsAt} />
-                                    </div>
-                                    <div>
-                                      <label className="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Ends</label>
-                                      <DateTimePicker value={editPlanEndsAt} onChange={setEditPlanEndsAt} />
-                                    </div>
-                                  </div>
-                                  <div className="mt-3">
-                                    <DurationQuickAdd baseDateStr={editPlanStartsAt} onApply={setEditPlanEndsAt} />
-                                  </div>
-                                  <p className="text-[11px] text-slate-500 mt-2 leading-snug">Locks access after end date. Telegram reminders last 7 days.</p>
-                                </section>
-                              )}
+                            </div>
                           </div>
-
                           {/* Footer */}
-                          <div className="flex-shrink-0 border-t border-slate-200 p-4 sm:p-5 flex flex-col-reverse sm:flex-row gap-2.5 sm:gap-3 bg-white">
+                          <div className="border-t border-slate-100 p-3 flex gap-2 bg-gradient-to-b from-white to-slate-50">
                             <button onClick={() => { setEditingUserAccounts(null); setEditHint(null); }}
-                              className="sm:flex-1 py-3.5 rounded-xl border-2 border-slate-200 bg-white text-slate-700 text-sm font-black uppercase tracking-widest hover:bg-slate-50 hover:border-slate-300 active:scale-[0.98] transition-all">
+                              className="flex-1 py-3 rounded-2xl border-2 border-slate-200 bg-white text-slate-700 text-sm font-bold hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all">
                               Cancel
                             </button>
                             <button onClick={() => updateUserAccounts(u.id)}
-                              className="sm:flex-[2] py-3.5 rounded-xl text-white text-sm font-black uppercase tracking-widest bg-gradient-to-r from-red-600 via-rose-600 to-red-700 hover:from-red-700 hover:via-rose-700 hover:to-red-800 active:scale-[0.98] shadow-lg shadow-red-300/60 hover:shadow-red-400/70 transition-all font-['Sora',system-ui,sans-serif]">
+                              className={`flex-[2] py-3 rounded-2xl text-white text-sm font-black shadow-xl active:scale-95 transition-all ${u.isFree ? "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-emerald-500/40" : "bg-gradient-to-r from-rose-600 via-red-600 to-orange-600 hover:brightness-110 shadow-rose-500/40"}`}>
                               Save Changes
                             </button>
                           </div>
@@ -9883,8 +7316,7 @@ function AdminPanel() {
                       document.body
                     )}
 
-
-                    {changingUserPass === u.id && createPortal(
+                    {changingUserPass === u.id && u.role !== "admin" && createPortal(
                       <div className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center animate-in fade-in duration-200"
                         onClick={() => setChangingUserPass(null)}
                         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -9944,7 +7376,6 @@ function AdminPanel() {
                       </div>,
                       document.body
                     )}
-                      </div>
                     </div>
                   </div>
 
@@ -10510,146 +7941,7 @@ function AdminPanel() {
               </div>
             </section>
 
-            {/* GitHub Actions Runner Setup — one-click sync */}
-            <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 sm:p-6">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex w-8 h-8 rounded-lg bg-slate-950 text-white items-center justify-center"><Zap className="w-4 h-4" /></span>
-                    <p className="text-base sm:text-lg font-bold text-slate-950 leading-snug">GitHub Actions runner</p>
-                    {ghSetupStatus?.configured ? (
-                      <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">Ready</span>
-                    ) : (
-                      <span className="text-[10px] font-black uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Not set up</span>
-                    )}
-                  </div>
-                  <p className="text-[13px] text-slate-500 mt-1 leading-relaxed">
-                    {ghSetupStatus?.configured
-                      ? <>Linked to <b className="text-slate-800">{ghSetupStatus.repo || "your repo"}</b>. HMAC key is auto-managed — no manual GitHub secrets to sync.</>
-                      : <>Paste a GitHub token once. We auto-detect the repo, generate an HMAC key, and push it to GitHub Actions secrets.</>}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setGhSetupOpen((v) => !v)}
-                    className="h-10 px-4 rounded-lg border border-slate-300 bg-white text-slate-900 text-xs font-bold hover:bg-slate-50 inline-flex items-center gap-1.5"
-                  >
-                    <Settings className="w-3.5 h-3.5" /> {ghSetupStatus?.configured ? "Rotate" : "Set up"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={testGithubRunner}
-                    disabled={githubTesting || !ghSetupStatus?.configured}
-                    className="h-10 px-4 rounded-lg bg-slate-950 text-white text-xs font-bold hover:bg-slate-800 disabled:opacity-50 inline-flex items-center gap-1.5"
-                  >
-                    {githubTesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />} Test
-                  </button>
-                </div>
-              </div>
-              {ghSetupOpen && (
-                <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
-                  <div>
-                    <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">GitHub Personal Access Token</label>
-                    <div className="relative mt-1">
-                      <input
-                        type={ghSetupPatVisible ? "text" : "password"}
-                        value={ghSetupPat}
-                        onChange={(e) => setGhSetupPat(e.target.value)}
-                        placeholder={ghSetupStatus?.hasPat ? "•••••••••••••• (saved — paste to replace)" : "github_pat_11A..."}
-                        className="w-full h-11 pl-3 pr-11 rounded-lg border border-slate-300 bg-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-950/10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = !ghSetupPatVisible;
-                          setGhSetupPatVisible(next);
-                          if (next && !ghSetupPat && ghSetupStatus?.hasPat) void revealSavedPat();
-                        }}
-                        aria-label={ghSetupPatVisible ? "Hide token" : "Show token"}
-                        className="absolute inset-y-0 right-0 w-11 flex items-center justify-center text-slate-500 hover:text-slate-900"
-                      >
-                        {ghSetupPatVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <details className="mt-2 rounded-lg border border-slate-200 bg-slate-50 open:bg-white overflow-hidden group">
-                      <summary className="cursor-pointer select-none list-none px-3 py-2.5 flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-700 hover:bg-slate-100">
-                        <span className="inline-flex items-center gap-1.5"><HelpCircle className="w-3.5 h-3.5" /> PAT kaise banaye? (step-by-step)</span>
-                        <ChevronDown className="w-3.5 h-3.5 transition-transform group-open:rotate-180" />
-                      </summary>
-                      <div className="px-4 py-3 border-t border-slate-200 space-y-3 text-[12px] leading-relaxed text-slate-700">
-                        <div>
-                          <p className="font-bold text-slate-900">1. GitHub me login karo</p>
-                          <p className="text-slate-600">Us account me jismein tumhara repo hai (jahan Actions chalane hain).</p>
-                        </div>
-                        <div>
-                          <p className="font-bold text-slate-900">2. Fine-grained token page kholo</p>
-                          <a
-                            href="https://github.com/settings/personal-access-tokens/new"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 mt-1 h-8 px-3 rounded-md bg-slate-950 text-white text-[11px] font-bold hover:bg-slate-800"
-                          >
-                            <ExternalLink className="w-3 h-3" /> Open GitHub token page
-                          </a>
-                          <p className="text-[11px] text-slate-500 mt-1.5">Manual: Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new</p>
-                        </div>
-                        <div>
-                          <p className="font-bold text-slate-900">3. Form bharo</p>
-                          <ul className="mt-1 space-y-1 text-slate-600 list-disc pl-4">
-                            <li><b>Token name:</b> koi bhi naam chalega (e.g. <code className="px-1 py-0.5 rounded bg-slate-100 text-slate-800">lovable-tv-runner</code>) — sirf tumhare reference ke liye hai</li>
-                            <li><b>Expiration:</b> 1 year (ya custom)</li>
-                            <li><b>Resource owner:</b> apna username / org</li>
-                            <li><b>Repository access:</b> <i>Only select repositories</i> → apna repo choose karo</li>
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="font-bold text-slate-900">4. Permissions (Repository permissions)</p>
-                          <div className="mt-1 rounded-md border border-slate-200 overflow-hidden text-[11px]">
-                            <div className="grid grid-cols-2 bg-slate-100 font-bold text-slate-700 px-2 py-1.5"><span>Permission</span><span>Access</span></div>
-                            <div className="grid grid-cols-2 px-2 py-1.5 border-t border-slate-100"><span>Actions</span><span className="font-mono">Read and write</span></div>
-                            <div className="grid grid-cols-2 px-2 py-1.5 border-t border-slate-100"><span>Secrets</span><span className="font-mono">Read and write</span></div>
-                            <div className="grid grid-cols-2 px-2 py-1.5 border-t border-slate-100"><span>Metadata</span><span className="font-mono">Read-only (auto)</span></div>
-                          </div>
-                          <p className="text-[11px] text-slate-500 mt-1.5">Contents permission zaroori nahi hai. Baaki sab <b>No access</b> chhod do.</p>
-                        </div>
-                        <div>
-                          <p className="font-bold text-slate-900">5. Generate token → copy karo</p>
-                          <p className="text-slate-600">Token <code className="px-1 py-0.5 rounded bg-slate-100 text-slate-800">github_pat_11...</code> se start hoga. Sirf ek baar dikhega — turant copy karke upar wale field me paste karo.</p>
-                        </div>
-                        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-                          <b>Org repo hai?</b> Agar "Resource owner" me org nahi dikh raha, org owner ko Settings → Third-party Access → Personal access tokens me fine-grained tokens allow karne padenge. Ya <a className="underline font-bold" href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=lovable-tv-runner" target="_blank" rel="noopener noreferrer">classic PAT (repo + workflow scope)</a> use karo — wo bhi kaam karega.
-                        </div>
-                      </div>
-                    </details>
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Repo (optional)</label>
-                    <input
-                      value={ghSetupRepo}
-                      onChange={(e) => setGhSetupRepo(e.target.value)}
-                      placeholder="auto-detected (owner/name)"
-                      className="mt-1 w-full h-11 px-3 rounded-lg border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-950/10"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={runGhSetup}
-                    disabled={ghSetupSyncing}
-                    className="w-full h-11 rounded-lg bg-slate-950 text-white text-sm font-bold hover:bg-slate-800 disabled:opacity-60 inline-flex items-center justify-center gap-2"
-                  >
-                    {ghSetupSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                    {ghSetupStatus?.configured ? "Rotate HMAC key & sync" : "Sync GitHub setup"}
-                  </button>
-                  {ghSetupStatus?.updatedAt && (
-                    <p className="text-[11px] text-slate-400 text-center">Last synced {new Date(ghSetupStatus.updatedAt).toLocaleString()}</p>
-                  )}
-                </div>
-              )}
-            </section>
-
             {/* People */}
-
             <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-5 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-2 min-w-0">
@@ -10747,263 +8039,207 @@ function AdminPanel() {
               </ul>
             </section>
 
-            {/* TV Runner — clean white redesign, no testing clutter */}
-            <section className="bg-white rounded-3xl border border-slate-200 overflow-hidden">
-              {/* Hero */}
-              <div className="px-6 sm:px-8 pt-7 pb-6">
-                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">TV Runner</p>
-                <h3 className="mt-1 text-2xl sm:text-[26px] font-black tracking-tight text-slate-950">Where should Netflix open?</h3>
-                <p className="mt-1.5 text-[13px] text-slate-500">One choice. Change anytime. VPS is instant, GitHub is free.</p>
-
-                {/* Segmented mode switch */}
-                <div className="mt-5 grid grid-cols-2 gap-1.5 p-1.5 rounded-2xl bg-slate-100">
-                  {([
-                    { id: "vps", label: "My VPS", hint: "Fast" },
-                    { id: "github", label: "GitHub Actions", hint: "Free" },
-                  ] as const).map((opt) => {
-                    const active = vpsCfg.mode === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => setVpsCfg((p) => ({ ...p, mode: opt.id }))}
-                        className={`h-12 rounded-xl text-[13px] font-black transition flex items-center justify-center gap-2 ${active ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-                      >
-                        {opt.label}
-                        <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${active ? "bg-slate-950 text-white" : "bg-slate-200 text-slate-500"}`}>{opt.hint}</span>
-                      </button>
-                    );
-                  })}
+            {/* VPS Access — matches the minimal white TV user-card style */}
+            <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-5 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-full bg-slate-900 text-white flex items-center justify-center shadow-sm shrink-0">
+                    <Server className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="font-black text-slate-950 leading-tight">VPS Access Card</h3>
+                    <p className="text-[12px] text-slate-500 mt-0.5">Private key upload/download uses Cloudflare R2, not Supabase storage.</p>
+                  </div>
                 </div>
+                <span className={`inline-flex items-center gap-1.5 text-[11px] font-black px-2.5 py-1 rounded-full shrink-0 ${vpsCfg.hasKey ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${vpsCfg.hasKey ? "bg-emerald-500" : "bg-amber-500"}`} />
+                  {vpsCfg.hasKey ? "Key ready" : "Key missing"}
+                </span>
               </div>
 
-              {/* Body */}
-              {vpsCfg.mode === "vps" ? (
-                <div className="px-6 sm:px-8 pb-7 pt-1 space-y-5">
-                  <div>
-                    <label className="text-[11px] font-black uppercase tracking-wider text-slate-500">Server IP</label>
+              <div className="divide-y divide-slate-100">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center px-5 sm:px-6 py-4 hover:bg-slate-50/60 transition-colors">
+                  <div className="w-10 h-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                    <Globe className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[14px] font-bold text-slate-900">VPS IP</p>
                     <input
                       value={vpsCfg.ip}
                       onChange={(e) => setVpsCfg((p) => ({ ...p, ip: e.target.value }))}
                       placeholder="140.238.226.213"
-                      className="mt-2 w-full h-12 rounded-xl border border-slate-200 bg-white px-4 font-mono text-[14px] font-bold text-slate-950 outline-none focus:border-slate-950 focus:ring-2 focus:ring-slate-950/10"
+                      className="mt-1 w-full max-w-sm rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm font-bold text-slate-900 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-2 focus:ring-slate-900/10"
                     />
                   </div>
-
-
-                  <div>
-                    <label className="text-[11px] font-black uppercase tracking-wider text-slate-500">SSH Private Key</label>
-                    <div className="mt-2 rounded-xl border border-slate-200 bg-white p-4">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${vpsCfg.hasKey ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"}`}>
-                          <KeyRound className="w-5 h-5" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-[13px] font-black text-slate-950 truncate">
-                            {vpsCfg.hasKey ? vpsCfg.keyFilename : "No key uploaded"}
-                          </p>
-                          <p className="text-[11px] text-slate-500 mt-0.5">
-                            {vpsCfg.hasKey
-                              ? `${vpsCfg.keySize ? (vpsCfg.keySize / 1024).toFixed(1) + " KB · " : ""}Stored in Cloudflare R2`
-                              : "Upload a .pem or .key file"}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => vpsFileInputRef.current?.click()}
-                          disabled={vpsUploading || vpsLoading}
-                          className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg bg-slate-950 px-3 text-[12px] font-black text-white hover:bg-slate-800 disabled:opacity-60"
-                        >
-                          {vpsUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                          {vpsCfg.hasKey ? "Replace" : "Upload"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={downloadSshKey}
-                          disabled={vpsLoading || !vpsCfg.hasKey}
-                          className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-black text-slate-800 hover:bg-slate-50 disabled:opacity-40"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Download
-                        </button>
-                        <input
-                          ref={vpsFileInputRef}
-                          type="file"
-                          accept=".pem,.key,.txt,*/*"
-                          className="hidden"
-                          onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadVpsKeyFile(f); }}
-                        />
-                      </div>
-
-                    </div>
+                  <div className="grid grid-cols-2 sm:flex gap-2 shrink-0 w-full sm:w-auto">
+                    <button
+                      type="button"
+                      onClick={saveVpsConfig}
+                      disabled={vpsSaving || vpsLoading}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-slate-900 px-4 text-[12px] font-black text-white transition hover:bg-slate-800 disabled:opacity-60"
+                    >
+                      {vpsSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => vpsCfg.ip.trim() ? copyToClipboard(vpsCfg.ip.trim(), "VPS IP copied") : notify.error("No IP saved")}
+                      disabled={vpsLoading}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-[12px] font-black text-slate-800 transition hover:bg-slate-50 disabled:opacity-60"
+                    >
+                      <Copy className="w-4 h-4" />
+                      Copy IP
+                    </button>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={saveVpsConfig}
-                    disabled={vpsSaving || vpsLoading}
-                    className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 text-[13px] font-black text-white hover:bg-slate-800 disabled:opacity-60"
-                  >
-                    {vpsSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                    Save changes
-                  </button>
                 </div>
-              ) : (
-                <div className="px-6 sm:px-8 pb-7 pt-1 space-y-4">
-                  <div className="rounded-xl border border-slate-200 bg-white p-5">
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-slate-950 text-white flex items-center justify-center shrink-0">
+
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center px-5 sm:px-6 py-4 hover:bg-slate-50/60 transition-colors">
+                  <div className="w-10 h-10 rounded-full bg-orange-50 text-orange-600 flex items-center justify-center shrink-0">
+                    <KeyRound className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[14px] font-bold text-slate-900">Private SSH key</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                      {vpsCfg.hasKey
+                        ? `${vpsCfg.keyFilename}${vpsCfg.keySize ? ` · ${(vpsCfg.keySize / 1024).toFixed(1)} KB` : ""}`
+                        : "Upload a .pem or .key file once. It is stored as an object in Cloudflare R2."}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 sm:flex gap-2 shrink-0 w-full sm:w-auto">
+                    <button
+                      type="button"
+                      onClick={() => vpsFileInputRef.current?.click()}
+                      disabled={vpsUploading || vpsLoading}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-[12px] font-black text-slate-800 transition hover:bg-slate-50 disabled:opacity-60"
+                    >
+                      {vpsUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                      Upload
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadSshKey}
+                      disabled={vpsLoading || !vpsCfg.hasKey}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 text-[12px] font-black text-white transition hover:bg-emerald-700 disabled:opacity-45"
+                    >
+                      <Download className="w-4 h-4" />
+                      Download
+                    </button>
+                    <input
+                      ref={vpsFileInputRef}
+                      type="file"
+                      accept=".pem,.key,.txt,*/*"
+                      className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadVpsKeyFile(f); }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* Connect with VPS — opens a popup */}
+            <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-5 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-full bg-slate-900 text-white flex items-center justify-center shadow-sm shrink-0">
+                    <Zap className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="font-black text-slate-950 leading-tight">Connect with VPS</h3>
+                    <p className="text-[12px] text-slate-500 mt-0.5">Open a quick connection helper for the saved VPS.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setVpsConnectOpen(true)}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-slate-900 px-4 text-[12px] font-black text-white transition hover:bg-slate-800"
+                >
+                  <Server className="w-4 h-4" />
+                  Connect
+                </button>
+              </div>
+            </section>
+
+            {vpsConnectOpen && createPortal(
+              <div
+                className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4"
+                onClick={() => setVpsConnectOpen(false)}
+              >
+                <div
+                  className="relative w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="px-5 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-full bg-slate-900 text-white flex items-center justify-center shadow-sm shrink-0">
                         <Zap className="w-5 h-5" />
                       </div>
                       <div className="min-w-0">
-                        <p className="text-[14px] font-black text-slate-950">Nothing to configure</p>
-                        <p className="mt-1 text-[12px] text-slate-500 leading-relaxed">
-                          GitHub Actions runs on their free servers. Slower (~45s per code) but no VPS to manage.
+                        <h3 className="font-black text-slate-950 leading-tight">Connect with VPS</h3>
+                        <p className="text-[12px] text-slate-500 mt-0.5 truncate">
+                          {vpsCfg.ip ? vpsCfg.ip : "No VPS IP saved yet."}
                         </p>
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setVpsConnectOpen(false)}
+                      className="w-9 h-9 rounded-full border border-slate-200 bg-white text-slate-600 flex items-center justify-center hover:bg-slate-50"
+                      aria-label="Close"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={saveVpsConfig}
-                    disabled={vpsSaving || vpsLoading}
-                    className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 text-[13px] font-black text-white hover:bg-slate-800 disabled:opacity-60"
-                  >
-                    {vpsSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                    Use GitHub Actions
-                  </button>
-                </div>
-              )}
-            </section>
-          </div>
-        )}
 
-        {activeTab === "cookies" && <CookiesTab emailAccounts={emailAccounts} />}
-
-        {activeTab === "directlink" && (
-          <div className="max-w-4xl mx-auto space-y-5">
-            {/* Header — mirrors TV Auto-Login */}
-            <div className="px-1">
-              <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-950 flex items-center gap-2.5">
-                <span className="inline-flex w-9 h-9 rounded-xl bg-slate-900 text-white items-center justify-center shadow-sm"><LinkIcon className="w-5 h-5" /></span>
-                Direct Link Access
-              </h2>
-              <p className="text-sm text-slate-500 mt-1.5 ml-[46px]">Decide who can generate <b className="text-slate-800">Netflix Direct Links</b> from their workflow.</p>
-            </div>
-
-            {/* Summary — one card, one sentence */}
-            <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 sm:p-6">
-              {(() => {
-                const nonAdmins = users.filter((u) => u.role !== "admin");
-                const on = nonAdmins.filter((u) => adminUserFeatures(u).link).length;
-                const total = nonAdmins.length;
-                return (
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-base sm:text-lg font-bold text-slate-950 leading-snug">{on} of {total} profiles enabled</p>
-                      <p className="text-[13px] text-slate-500 mt-1 leading-relaxed">
-                        {on === 0
-                          ? "No one has Direct Link access yet — toggle any profile below to enable."
-                          : on === total
-                          ? "Every profile below can generate Netflix Direct Links from their workflow page."
-                          : "Green means enabled — toggle any profile below to change access."}
-                      </p>
+                  <div className="px-5 sm:px-6 py-5 space-y-4">
+                    <div>
+                      <p className="text-[12px] font-bold text-slate-500 uppercase tracking-wide">SSH command</p>
+                      <div className="mt-2 flex items-stretch gap-2">
+                        <code className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-[12px] font-bold text-slate-900 break-all">
+                          {`ssh -i ${vpsCfg.keyFilename || "vps-private-key.pem"} root@${vpsCfg.ip || "<vps-ip>"}`}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            copyToClipboard(
+                              `ssh -i ${vpsCfg.keyFilename || "vps-private-key.pem"} root@${vpsCfg.ip || ""}`.trim(),
+                              "SSH command copied"
+                            )
+                          }
+                          className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-[12px] font-black text-slate-800 transition hover:bg-slate-50"
+                        >
+                          <Copy className="w-4 h-4" />
+                          Copy
+                        </button>
+                      </div>
                     </div>
-                    <span className="shrink-0 inline-flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1">
-                      <LinkIcon className="w-3 h-3" />
-                      Direct Link
-                    </span>
+
+                    <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-[12px] text-slate-600">
+                      Make sure the private key is downloaded to your machine and its permissions are <code className="font-mono font-bold text-slate-800">600</code> before running the command.
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={downloadSshKey}
+                        disabled={!vpsCfg.hasKey}
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 text-[12px] font-black text-white transition hover:bg-emerald-700 disabled:opacity-45"
+                      >
+                        <Download className="w-4 h-4" />
+                        Download key
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVpsConnectOpen(false)}
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-[12px] font-black text-slate-800 transition hover:bg-slate-50"
+                      >
+                        Close
+                      </button>
+                    </div>
                   </div>
-                );
-              })()}
-            </section>
-
-            {/* People */}
-            <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-5 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2 min-w-0">
-                  <h3 className="font-bold text-slate-950">People</h3>
-                  <span className="text-[11px] font-bold text-slate-500 bg-slate-100 rounded-full px-2 py-0.5">{filteredDirectUsers.length}</span>
                 </div>
-                <div className="relative w-full sm:w-72">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                  <input
-                    value={directSearch}
-                    onChange={(e) => setDirectSearch(e.target.value)}
-                    placeholder="Search name or @username"
-                    className="w-full h-10 pl-9 pr-3 rounded-xl border border-slate-200 bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300 focus:bg-white transition"
-                  />
-                </div>
-              </div>
-
-              <ul className="divide-y divide-slate-100">
-                {filteredDirectUsers.map((u) => {
-                  const enabled = adminUserFeatures(u).link === true;
-                  return (
-                    <li key={u.id} className="flex items-center gap-3 sm:gap-4 px-5 sm:px-6 py-3.5 hover:bg-slate-50/60 transition-colors">
-                      <ProfileAvatar avatarId={getStableProfileAvatar(u)} name={u.name} className="w-10 h-10 !rounded-full ring-1 ring-slate-200 shadow-sm shrink-0" fallbackColor={u.isFree ? "bg-emerald-500" : "bg-blue-500"} />
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                          <p className="text-[14px] font-bold text-slate-900 truncate">{u.name}</p>
-                          <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${enabled ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${enabled ? "bg-emerald-500" : "bg-slate-400"}`} />
-                            {enabled ? "Enabled" : "Disabled"}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5 min-w-0">
-                          <span className="font-mono truncate">{u.username ? `@${u.username}` : "free profile"}</span>
-                          {enabled && (
-                            <button
-                              type="button"
-                              onClick={() => loginAsUser(u, "link")}
-                              className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 shrink-0"
-                              title="Open this user's Direct Link page"
-                            >
-                              ↗ Open
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Two-state segmented switch: Enable / Disable */}
-                      <div className="shrink-0 inline-flex p-0.5 rounded-full bg-slate-100 border border-slate-200">
-                        {([
-                          { value: true,  label: "Enable",  Icon: Eye,    solid: "bg-emerald-500 text-white shadow-sm", soft: "bg-emerald-100 text-emerald-700" },
-                          { value: false, label: "Disable", Icon: EyeOff, solid: "bg-slate-900 text-white shadow-sm",   soft: "bg-slate-200 text-slate-700" },
-                        ]).map((opt) => {
-                          const isActive = enabled === opt.value;
-                          const Icon = opt.Icon;
-                          const cls = isActive ? opt.solid : "text-slate-500 hover:text-slate-800";
-                          return (
-                            <button
-                              key={String(opt.value)}
-                              type="button"
-                              onClick={() => { if (enabled !== opt.value) toggleUserFeature(u, "link"); }}
-                              className={`inline-flex items-center gap-1.5 px-3 sm:px-3.5 h-8 rounded-full text-[12px] font-bold transition-all active:scale-[0.97] ${cls}`}
-                              aria-pressed={isActive}
-                            >
-                              <Icon className="w-3.5 h-3.5" />
-                              <span>{opt.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </li>
-                  );
-                })}
-
-                {filteredDirectUsers.length === 0 && (
-                  <li className="px-6 py-16 text-center">
-                    <div className="inline-flex p-3 rounded-full bg-slate-100 mb-3"><Search className="w-5 h-5 text-slate-400" /></div>
-                    <p className="text-sm font-bold text-slate-700">No people match your search</p>
-                    <p className="text-xs text-slate-500 mt-1">Try a different name or username.</p>
-                  </li>
-                )}
-              </ul>
-            </section>
+              </div>,
+              document.body
+            )}
           </div>
         )}
 
@@ -11012,235 +8248,246 @@ function AdminPanel() {
 
         {activeTab === "notifications" && (
           <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_1fr] gap-4 sm:gap-6">
-            {/* --- Composer (light theme) --- */}
-            <section className="bg-white p-5 sm:p-7 rounded-2xl border border-slate-200 shadow-sm">
-              <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-100">
-                <div className="bg-slate-900 p-2 rounded-xl">
-                  <Bell className="w-4 h-4 text-white" />
-                </div>
-                <div>
-                  <h2 className="font-bold text-slate-900 text-base sm:text-lg leading-tight">New Notification</h2>
-                  <p className="text-[11px] text-slate-500">Compose once. Publish to the right people.</p>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                {/* Title + Link URL side by side */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Title <span className="text-rose-500">*</span></label>
-                    <input value={notifTitle} onChange={(e) => setNotifTitle(e.target.value)} placeholder="e.g. Join our Telegram Group"
-                      className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/5 transition-all" />
+            {/* --- Composer --- */}
+            <section className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6 sm:p-7 rounded-3xl border border-white/5 shadow-2xl relative overflow-hidden">
+              <div className="absolute -top-24 -right-24 w-64 h-64 bg-orange-500/10 rounded-full blur-3xl pointer-events-none" />
+              <div className="relative">
+                <div className="flex items-center gap-3 mb-1">
+                  <div className="bg-gradient-to-br from-orange-500 to-red-600 p-2 rounded-xl shadow-lg shadow-orange-500/20">
+                    <Bell className="w-4 h-4 text-white" />
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Link URL</label>
-                    <input value={notifActionUrl} onChange={(e) => setNotifActionUrl(e.target.value)} placeholder="https://t.me/yourchannel"
-                      className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/5 transition-all" />
+                    <h2 className="font-black text-white text-base sm:text-lg leading-tight">New Notification</h2>
+                    <p className="text-[11px] text-slate-400">One card, one message. Keep it sharp.</p>
                   </div>
                 </div>
 
-                {/* Message */}
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Message <span className="text-rose-500">*</span></label>
-                  <textarea value={notifBody} onChange={(e) => setNotifBody(e.target.value)} placeholder="e.g. Join our Telegram group for daily updates, free PDFs and notifications." rows={3}
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/5 transition-all resize-none" />
-                </div>
-
-                {/* Notification Template */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Notification Type</label>
-                    {notifTemplate && (
-                      <button type="button" onClick={() => setNotifTemplate("")} className="text-[10px] font-semibold text-slate-500 hover:text-slate-900">Clear</button>
-                    )}
-                  </div>
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-2">
-                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-[132px] overflow-y-auto pr-1">
-                      {TEMPLATE_OPTIONS.map((t) => {
-                        const active = notifTemplate === t.id;
-                        return (
-                          <button key={t.id} type="button" onClick={() => setNotifTemplate(t.id)} title={t.hint}
-                            className={`flex items-center gap-2 px-2 py-2 rounded-lg border transition-all min-w-0 ${active ? "bg-white border-slate-900 shadow-sm" : "bg-white border-slate-200 hover:border-slate-300"}`}>
-                            <div className="w-6 h-6 rounded-md flex items-center justify-center text-white shrink-0" style={{ background: t.color }}>
-                              <TemplateIcon id={t.id} className="w-3 h-3" />
-                            </div>
-                            <span className={`text-[10.5px] font-semibold truncate ${active ? "text-slate-900" : "text-slate-600"}`}>{t.label}</span>
-                          </button>
-                        );
-                      })}
+                <div className="mt-5 space-y-4">
+                  {/* Title + Link URL side by side */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Title <span className="text-orange-400">*</span></label>
+                      <input value={notifTitle} onChange={(e) => setNotifTitle(e.target.value)} placeholder="e.g. Join our Telegram Group"
+                        className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl dark-input text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-orange-500/50 focus:bg-white/[0.06] transition-all" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Link URL</label>
+                      <input value={notifActionUrl} onChange={(e) => setNotifActionUrl(e.target.value)} placeholder="https://t.me/yourchannel"
+                        className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl dark-input text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-orange-500/50 focus:bg-white/[0.06] transition-all" />
                     </div>
                   </div>
-                </div>
 
-                {/* Platform / Icon */}
-                <div>
-                  <div className="flex items-center justify-between mb-2 gap-2">
-                    <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Platform / Icon</label>
-                    <input value={platformSearch} onChange={(e) => setPlatformSearch(e.target.value)} placeholder="Search platform…"
-                      className="w-40 px-2 py-1 bg-white border border-slate-200 rounded-md text-[11px] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900" />
+                  {/* Message */}
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Message <span className="text-orange-400">*</span></label>
+                    <textarea value={notifBody} onChange={(e) => setNotifBody(e.target.value)} placeholder="e.g. Join our Telegram group for daily updates, free PDFs and notifications." rows={3}
+                      className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl dark-input text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-orange-500/50 focus:bg-white/[0.06] transition-all resize-none" />
                   </div>
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 max-h-[240px] overflow-y-auto">
-                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
-                      {filteredPlatformOptions.map((p) => {
-                        const active = resolvePlatformOption(notifPlatformIcon).id === p.id;
-                        return (
-                          <button key={p.id || "none"} type="button" onClick={() => setNotifPlatformIcon(p.id)}
-                            className={`group relative flex flex-col items-center justify-center gap-1.5 py-2.5 px-1.5 rounded-lg border transition-all min-h-[74px] ${active ? "bg-white border-slate-900 shadow-sm" : "bg-white border-slate-200 hover:border-slate-300"}`}>
-                            <PlatformChipVisual id={p.id} size={40} />
-                            <span className={`text-[9.5px] font-medium text-center leading-tight px-0.5 line-clamp-2 ${active ? "text-slate-900" : "text-slate-500 group-hover:text-slate-700"}`}>{p.label}</span>
-                          </button>
-                        );
-                      })}
+
+                  {/* Notification Template (guided type) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Notification Type</label>
+                      {notifTemplate && (
+                        <button type="button" onClick={() => setNotifTemplate("")} className="text-[10px] text-slate-500 hover:text-orange-400">Clear</button>
+                      )}
                     </div>
-                    {filteredPlatformOptions.length === 0 && (
-                      <p className="text-center text-[11px] text-slate-500 py-4">No platform matches "{platformSearch}"</p>
-                    )}
+                    <div className="bg-black/30 border border-white/[0.06] rounded-xl p-2">
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-[132px] overflow-y-auto pr-1 [scrollbar-width:thin] [scrollbar-color:rgba(255,255,255,0.15)_transparent]">
+                        {TEMPLATE_OPTIONS.map((t) => {
+                          const active = notifTemplate === t.id;
+                          return (
+                            <button key={t.id} type="button" onClick={() => setNotifTemplate(t.id)} title={t.hint}
+                              className={`flex items-center gap-2 px-2 py-2 rounded-lg border transition-all min-w-0 ${active ? "border-orange-500/60 shadow-md shadow-orange-500/10" : "border-white/[0.06] hover:border-white/20"}`}
+                              style={active ? { background: `linear-gradient(135deg, ${t.color}22, ${t.color}0d)` } : { background: "rgba(255,255,255,0.02)" }}>
+                              <div className="w-6 h-6 rounded-md flex items-center justify-center text-white shrink-0" style={{ background: t.color }}>
+                                <TemplateIcon id={t.id} className="w-3 h-3" />
+                              </div>
+                              <span className={`text-[10.5px] font-semibold truncate ${active ? "text-white" : "text-slate-300"}`}>{t.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
-                </div>
 
-                {/* Toggles */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                    <label className="text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-500 block mb-2">User Can Delete?</label>
-                    <div className="flex items-center gap-2">
+                  {/* Platform / Icon — scrollable container with search */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2 gap-2">
+                      <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Platform / Icon</label>
+                      <input value={platformSearch} onChange={(e) => setPlatformSearch(e.target.value)} placeholder="Search platform…"
+                        className="w-40 px-2 py-1 bg-white/[0.04] border border-white/10 rounded-md dark-input text-[11px] text-white placeholder:text-slate-600 focus:outline-none focus:border-orange-500/50" />
+                    </div>
+                    <div className="bg-black/30 border border-white/[0.06] rounded-xl p-2 max-h-[240px] overflow-y-auto [scrollbar-width:thin] [scrollbar-color:rgba(255,255,255,0.15)_transparent]">
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
+                        {filteredPlatformOptions.map((p) => {
+                          const active = resolvePlatformOption(notifPlatformIcon).id === p.id;
+                          return (
+                            <button key={p.id || "none"} type="button" onClick={() => setNotifPlatformIcon(p.id)}
+                              className={`group relative flex flex-col items-center justify-center gap-1.5 py-2.5 px-1.5 rounded-lg border transition-all min-h-[74px] ${active ? "bg-orange-500/10 border-orange-500/60 shadow-md shadow-orange-500/10" : "bg-white/[0.02] border-white/[0.05] hover:bg-white/[0.05] hover:border-white/15"}`}>
+                              <PlatformChipVisual id={p.id} size={40} />
+                              <span className={`text-[9.5px] font-medium text-center leading-tight px-0.5 line-clamp-2 ${active ? "text-white" : "text-slate-400 group-hover:text-slate-200"}`}>{p.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {filteredPlatformOptions.length === 0 && (
+                        <p className="text-center text-[11px] text-slate-500 py-4">No platform matches "{platformSearch}"</p>
+                      )}
+                    </div>
+                  </div>
+
+
+
+                  {/* Toggles: User can delete + Audience */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-3">
+                      <label className="text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-500 block mb-2">User Can Delete?</label>
                       <button type="button" onClick={() => setNotifLocked(!notifLocked)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${!notifLocked ? "bg-emerald-500" : "bg-slate-300"}`}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${!notifLocked ? "bg-emerald-500" : "bg-slate-700"}`}
                         aria-label="Allow user to delete this notification">
                         <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${!notifLocked ? "translate-x-6" : "translate-x-1"}`} />
                       </button>
-                      <span className="text-[11px] text-slate-600">
-                        {notifLocked ? "Locked" : "Allowed"}
+                      <span className="ml-2 text-[11px] text-slate-400">
+                        {notifLocked
+                          ? "🔒 Locked — user delete nahi kar sakta"
+                          : "🔓 Haan, user delete kar sakta hai"}
                       </span>
                     </div>
-                  </div>
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                    <label className="text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-500 block mb-2">Audience</label>
-                    <div className="inline-flex bg-white border border-slate-200 rounded-lg p-0.5 text-[11px]">
-                      <button type="button" onClick={() => setNotifAudience("all")}
-                        className={`px-2.5 py-1 rounded-md font-semibold transition-all ${notifAudience === "all" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-900"}`}>All users</button>
-                      <button type="button" onClick={() => setNotifAudience("user")}
-                        className={`px-2.5 py-1 rounded-md font-semibold transition-all ${notifAudience === "user" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-900"}`}>Specific</button>
-                    </div>
-                  </div>
-                </div>
-
-                {notifAudience === "user" && (
-                  <select value={notifTargetUser} onChange={(e) => setNotifTargetUser(e.target.value)}
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 font-medium focus:outline-none focus:border-slate-900">
-                    <option value="">— select user —</option>
-                    {users.map((u) => <option key={u.id} value={u.id}>{u.name || u.username}</option>)}
-                  </select>
-                )}
-
-                {/* Advanced */}
-                <details className="group bg-slate-50 border border-slate-200 rounded-xl">
-                  <summary className="cursor-pointer text-[11px] font-semibold text-slate-600 hover:text-slate-900 transition-colors flex items-center gap-1.5 list-none px-3 py-2.5">
-                    <ChevronDown className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" />
-                    Advanced (image, CTA label, expiry)
-                  </summary>
-                  <div className="px-3 pb-3 space-y-3">
-                    <div>
-                      <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Hero image URL</label>
-                      <div className="flex gap-2">
-                        <input value={notifImageUrl} onChange={(e) => setNotifImageUrl(e.target.value)} placeholder="https://…/image.jpg"
-                          className="flex-1 px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900" />
-                        <label className={`px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${notifImageUploading ? "bg-slate-200 text-slate-500 cursor-wait" : "bg-slate-900 text-white hover:bg-slate-800"}`}>
-                          {notifImageUploading ? "Uploading…" : "Upload"}
-                          <input type="file" accept="image/*" className="hidden" disabled={notifImageUploading}
-                            onChange={async (e) => {
-                              const file = e.target.files?.[0];
-                              e.currentTarget.value = "";
-                              if (!file) return;
-                              if (file.size > 8 * 1024 * 1024) { notify.error("Image too large (max 8 MB)"); return; }
-                              setNotifImageUploading(true);
-                              try {
-                                const dataBase64: string = await new Promise((resolve, reject) => {
-                                  const r = new FileReader();
-                                  r.onload = () => resolve(String(r.result || ""));
-                                  r.onerror = () => reject(new Error("read failed"));
-                                  r.readAsDataURL(file);
-                                });
-                                const res = await apiCall("manage-app", {
-                                  action: "admin_upload_notification_image",
-                                  filename: file.name,
-                                  contentType: file.type || "image/jpeg",
-                                  dataBase64,
-                                });
-                                if (res?.success && res.url) { setNotifImageUrl(res.url); notify.success("Uploaded"); }
-                                else throw new Error(res?.error || "upload failed");
-                              } catch (err: any) { notify.error(err?.message || "Upload failed"); }
-                              finally { setNotifImageUploading(false); }
-                            }} />
-                        </label>
+                    <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-3">
+                      <label className="text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-500 block mb-2">Audience</label>
+                      <div className="flex gap-1 text-[11px]">
+                        <button type="button" onClick={() => setNotifAudience("all")}
+                          className={`px-2.5 py-1 rounded-md font-semibold transition-all ${notifAudience === "all" ? "bg-white text-slate-900" : "text-slate-400 hover:text-white"}`}>All users</button>
+                        <button type="button" onClick={() => setNotifAudience("user")}
+                          className={`px-2.5 py-1 rounded-md font-semibold transition-all ${notifAudience === "user" ? "bg-white text-slate-900" : "text-slate-400 hover:text-white"}`}>Specific</button>
                       </div>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <input value={notifActionLabel} onChange={(e) => setNotifActionLabel(e.target.value)} placeholder="CTA label (auto if empty)"
-                        className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900" />
-                      <input value={notifExpiresDays} onChange={(e) => setNotifExpiresDays(e.target.value)} placeholder="Expires (days)" type="number" min="1"
-                        className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900" />
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <select value={notifPriority} onChange={(e) => setNotifPriority(e.target.value as any)}
-                        className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 font-medium capitalize focus:outline-none focus:border-slate-900">
-                        {(["low","normal","high","critical"] as const).map(p => <option key={p} value={p} className="capitalize">{p} priority</option>)}
-                      </select>
-                      <select value={notifShowFrequency} onChange={(e) => setNotifShowFrequency(e.target.value as any)}
-                        className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 font-medium focus:outline-none focus:border-slate-900">
-                        <option value="once">Show once</option>
-                        <option value="session">Every session</option>
-                        <option value="daily">Once per day</option>
-                        <option value="always">Always until read</option>
-                      </select>
-                    </div>
                   </div>
-                </details>
 
-                <button onClick={sendNotification} disabled={sendingNotif || !notifTitle.trim() || !notifBody.trim()}
-                  className="w-full mt-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 shadow-sm transition-all">
-                  <Send className="w-4 h-4" /> {sendingNotif ? "Publishing…" : "Publish Notification"}
-                </button>
+                  {notifAudience === "user" && (
+                    <select value={notifTargetUser} onChange={(e) => setNotifTargetUser(e.target.value)}
+                      className="w-full px-3.5 py-2.5 bg-white border border-white/10 rounded-xl text-sm text-slate-900 font-medium focus:outline-none focus:border-orange-500/60">
+                      <option value="">— select user —</option>
+                      {users.map((u) => <option key={u.id} value={u.id}>{u.name || u.username}</option>)}
+                    </select>
+                  )}
+
+
+                  {/* Advanced toggle */}
+                  <details className="group">
+                    <summary className="cursor-pointer text-[11px] font-semibold text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1.5 list-none">
+                      <ChevronDown className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" />
+                      Advanced (image, CTA label, expiry)
+                    </summary>
+                    <div className="mt-3 space-y-3 pl-1">
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-1.5 block">Hero image URL</label>
+                        <div className="flex gap-2">
+                          <input value={notifImageUrl} onChange={(e) => setNotifImageUrl(e.target.value)} placeholder="https://…/image.jpg"
+                            className="flex-1 px-3.5 py-2 bg-white/[0.04] border border-white/10 rounded-xl dark-input text-sm text-white placeholder:text-slate-600" />
+                          <label className={`px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${notifImageUploading ? "bg-white/5 text-slate-500 cursor-wait" : "bg-white text-slate-900 hover:bg-slate-200"}`}>
+                            {notifImageUploading ? "Uploading…" : "Upload"}
+                            <input type="file" accept="image/*" className="hidden" disabled={notifImageUploading}
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                e.currentTarget.value = "";
+                                if (!file) return;
+                                if (file.size > 8 * 1024 * 1024) { notify.error("Image too large (max 8 MB)"); return; }
+                                setNotifImageUploading(true);
+                                try {
+                                  const dataBase64: string = await new Promise((resolve, reject) => {
+                                    const r = new FileReader();
+                                    r.onload = () => resolve(String(r.result || ""));
+                                    r.onerror = () => reject(new Error("read failed"));
+                                    r.readAsDataURL(file);
+                                  });
+                                  const res = await apiCall("manage-app", {
+                                    action: "admin_upload_notification_image",
+                                    filename: file.name,
+                                    contentType: file.type || "image/jpeg",
+                                    dataBase64,
+                                  });
+                                  if (res?.success && res.url) { setNotifImageUrl(res.url); notify.success("Uploaded"); }
+                                  else throw new Error(res?.error || "upload failed");
+                                } catch (err: any) { notify.error(err?.message || "Upload failed"); }
+                                finally { setNotifImageUploading(false); }
+                              }} />
+                          </label>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <input value={notifActionLabel} onChange={(e) => setNotifActionLabel(e.target.value)} placeholder="CTA label (auto if empty)"
+                          className="px-3.5 py-2 bg-white/[0.04] border border-white/10 rounded-xl dark-input text-sm text-white placeholder:text-slate-600" />
+                        <input value={notifExpiresDays} onChange={(e) => setNotifExpiresDays(e.target.value)} placeholder="Expires (days)" type="number" min="1"
+                          className="px-3.5 py-2 bg-white/[0.04] border border-white/10 rounded-xl dark-input text-sm text-white placeholder:text-slate-600" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <select value={notifPriority} onChange={(e) => setNotifPriority(e.target.value as any)}
+                          className="px-3.5 py-2 bg-white border border-white/10 rounded-xl text-sm text-slate-900 font-medium capitalize focus:outline-none focus:border-orange-500/60">
+                          {(["low","normal","high","critical"] as const).map(p => <option key={p} value={p} className="capitalize">{p} priority</option>)}
+                        </select>
+                        <select value={notifShowFrequency} onChange={(e) => setNotifShowFrequency(e.target.value as any)}
+                          className="px-3.5 py-2 bg-white border border-white/10 rounded-xl text-sm text-slate-900 font-medium focus:outline-none focus:border-orange-500/60">
+                          <option value="once">Show once</option>
+                          <option value="session">Every session</option>
+                          <option value="daily">Once per day</option>
+                          <option value="always">Always until read</option>
+                        </select>
+                      </div>
+
+                    </div>
+                  </details>
+
+                  <button onClick={sendNotification} disabled={sendingNotif || !notifTitle.trim() || !notifBody.trim()}
+                    className="w-full mt-2 bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-400 hover:to-red-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 shadow-lg shadow-orange-500/25 transition-all">
+                    <Send className="w-4 h-4" /> {sendingNotif ? "Publishing…" : "Publish Notification"}
+                  </button>
+                </div>
               </div>
             </section>
 
+
             {/* --- Live preview + Past notifications --- */}
             <div className="space-y-4 sm:space-y-6">
-              {/* Live preview — matches the white user-facing card */}
-              <section className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-[10.5px] uppercase tracking-[0.16em] text-slate-500 font-bold">Live Preview</span>
-                  <span className="text-[10px] text-slate-400">how users will see it</span>
+              <section className="rounded-2xl overflow-hidden border shadow-sm" style={{ background: "linear-gradient(180deg,#111 0%,#1a1a1c 100%)" }}>
+                <div className="px-4 py-2.5 flex items-center justify-between border-b border-white/[0.06]">
+                  <span className="text-[10.5px] uppercase tracking-[0.16em] text-zinc-400 font-medium">Live Preview</span>
+                  <span className="text-[10px] text-zinc-500">how users will see it</span>
                 </div>
-                <div className="rounded-2xl overflow-hidden mx-auto max-w-[400px] bg-white border border-slate-200 shadow-sm">
-                  <div className={`h-[3px] ${notifPriority === "critical" ? "bg-rose-500" : notifPriority === "high" ? "bg-amber-500" : notifPriority === "normal" ? "bg-sky-500" : "bg-slate-400"}`} />
-                  {notifImageUrl && (
-                    <div className="aspect-[16/9] w-full bg-slate-100 overflow-hidden">
-                      <img src={notifImageUrl} referrerPolicy="no-referrer" className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-                    </div>
-                  )}
-                  <div className="p-5">
-                    <div className="flex items-center gap-2 mb-2">
-                      {notifPlatformIcon ? <PlatformChipVisual id={notifPlatformIcon} size={22} /> : null}
-                      <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500 font-semibold capitalize">{notifCategory}</span>
-                    </div>
-                    <h3 className="text-slate-900 text-[19px] leading-tight mb-2 font-bold" style={{ letterSpacing: "-0.015em" }}>
-                      {notifTitle || "Your title here"}
-                    </h3>
-                    <p className="text-slate-700 text-[13px] leading-relaxed">{notifBody || "Short body text preview…"}</p>
-                    {notifDescription && <p className="mt-2 text-slate-500 text-[12px] leading-relaxed line-clamp-3">{notifDescription}</p>}
-                    {(notifActionLabel || notifActionUrl) && (
-                      <div className="mt-4 py-2.5 px-4 rounded-xl bg-slate-900 text-white text-center text-[13px] font-bold">
-                        {notifActionLabel || "CTA"}
+                <div className="p-5">
+                  <div className="rounded-2xl overflow-hidden mx-auto max-w-[400px]" style={{
+                    background: "rgba(14,14,17,0.92)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    boxShadow: "0 20px 50px -10px rgba(0,0,0,0.6)",
+                  }}>
+                    <div className={`h-[3px] ${notifPriority === "critical" ? "bg-rose-500" : notifPriority === "high" ? "bg-amber-500" : notifPriority === "normal" ? "bg-sky-500" : "bg-zinc-500"}`} />
+                    {notifImageUrl && (
+                      <div className="aspect-[16/9] w-full bg-zinc-900 overflow-hidden">
+                        <img src={notifImageUrl} referrerPolicy="no-referrer" className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
                       </div>
                     )}
+                    <div className="p-5">
+                      <span className="text-[10px] uppercase tracking-[0.14em] text-zinc-400 font-medium capitalize">{notifCategory}</span>
+                      <h3 className="text-white text-[19px] leading-tight mt-2 mb-2" style={{ fontFamily: "'Instrument Serif', ui-serif, Georgia, serif", letterSpacing: "-0.015em" }}>
+                        {notifTitle || "Your title here"}
+                      </h3>
+                      <p className="text-zinc-300 text-[13px] leading-relaxed font-light">{notifBody || "Short body text preview…"}</p>
+                      {notifDescription && <p className="mt-2 text-zinc-500 text-[12px] leading-relaxed font-light line-clamp-3">{notifDescription}</p>}
+                      {(notifActionLabel || notifActionUrl) && (
+                        <div className="mt-4 py-2 px-4 rounded-xl bg-white text-black text-center text-[13px] font-semibold">
+                          {notifActionLabel || "CTA"}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </section>
 
-              <section className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
-                  <h2 className="font-bold text-base sm:text-lg flex items-center gap-2 text-slate-900">
-                    <div className="bg-slate-900 p-1.5 rounded-lg"><MessageSquare className="w-4 h-4 text-white" /></div>
+              <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="font-black text-base sm:text-lg flex items-center gap-2">
+                    <div className="bg-slate-100 p-1.5 rounded-lg"><MessageSquare className="w-4 h-4 text-slate-700" /></div>
                     Past Notifications
                     <span className="text-[11px] font-semibold text-slate-400">({adminNotifs.length})</span>
                   </h2>
@@ -11248,81 +8495,54 @@ function AdminPanel() {
                     <RefreshCw className="w-3 h-3" /> Refresh
                   </button>
                 </div>
-                <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-                  {adminNotifs.length === 0 && (
-                    <div className="text-center py-10">
-                      <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 flex items-center justify-center mb-2">
-                        <Bell className="w-5 h-5 text-slate-400" />
-                      </div>
-                      <p className="text-sm text-slate-500">No notifications yet.</p>
-                    </div>
-                  )}
+                <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                  {adminNotifs.length === 0 && <p className="text-sm text-slate-500">No notifications yet.</p>}
                   {adminNotifs.map((n) => (
-                    <div key={n.id} className="border border-slate-200 rounded-xl overflow-hidden hover:border-slate-300 hover:shadow-sm transition-all bg-white">
-                      {/* Hero image preview if uploaded — same as what users see */}
-                      {n.image_url && (
-                        <div className="relative aspect-[16/7] w-full overflow-hidden bg-slate-100 border-b border-slate-200">
-                          <img src={n.image_url} referrerPolicy="no-referrer" alt="" loading="lazy"
-                            className="absolute inset-0 w-full h-full object-cover"
-                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-                        </div>
-                      )}
-                      <div className="p-3.5 sm:p-4">
-                        <div className="flex items-start gap-3">
-                          <div className="shrink-0">
-                            {n.platform_icon
-                              ? <PlatformChipVisual id={n.platform_icon} size={44} />
-                              : <div className="w-11 h-11 rounded-xl bg-slate-100 flex items-center justify-center"><Bell className="w-4 h-4 text-slate-400" /></div>}
+                    <div key={n.id} className="border-2 rounded-2xl p-4 hover:border-slate-300 hover:shadow-md transition-all group bg-white">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                            {n.platform_icon ? <PlatformChipVisual id={n.platform_icon} size={20} /> : null}
+                            <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-semibold ${n.locked ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-emerald-50 text-emerald-700 border border-emerald-200"}`}>
+                              {n.locked ? "🔒 Locked" : "🔓 User delete OK"}
+                            </span>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 capitalize font-medium">{n.category || "announcement"}</span>
+                            <span className={`inline-flex items-center gap-1 text-[10px] font-semibold capitalize ${n.priority === "critical" ? "text-rose-600" : n.priority === "high" ? "text-amber-600" : n.priority === "normal" ? "text-sky-600" : "text-zinc-500"}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${n.priority === "critical" ? "bg-rose-500" : n.priority === "high" ? "bg-amber-500" : n.priority === "normal" ? "bg-sky-500" : "bg-zinc-400"}`} />
+                              {n.priority || "low"}
+                            </span>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
+                              {n.audience === "all" ? `👥 Sabko (${n.totalRecipients || 0})` : "👤 Ek user ko"}
+                            </span>
                           </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                              <span className={`inline-flex items-center gap-1 text-[10px] font-semibold capitalize ${n.priority === "critical" ? "text-rose-600" : n.priority === "high" ? "text-amber-600" : n.priority === "normal" ? "text-sky-600" : "text-slate-500"}`}>
-                                <span className={`w-1.5 h-1.5 rounded-full ${n.priority === "critical" ? "bg-rose-500" : n.priority === "high" ? "bg-amber-500" : n.priority === "normal" ? "bg-sky-500" : "bg-slate-400"}`} />
-                                {n.priority || "low"}
-                              </span>
-                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 capitalize font-medium">{n.category || "announcement"}</span>
-                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${n.locked ? "bg-amber-50 text-amber-700 border border-amber-100" : "bg-emerald-50 text-emerald-700 border border-emerald-100"}`}>
-                                {n.locked ? "Locked" : "User delete OK"}
-                              </span>
-                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
-                                {n.audience === "all" ? `All · ${n.totalRecipients || 0}` : "Specific"}
-                              </span>
-                              {n.image_url && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100 font-medium inline-flex items-center gap-1">
-                                  <ImageIcon className="w-2.5 h-2.5" /> Image
-                                </span>
-                              )}
-                            </div>
-                            <p className="font-bold text-[14.5px] text-slate-900 truncate">{n.title}</p>
-                            <p className="text-[12.5px] text-slate-600 line-clamp-2 mt-0.5">{n.body}</p>
-                            <div className="flex items-center gap-3 mt-2 flex-wrap text-[11px]">
-                              <span className="inline-flex items-center gap-1 text-slate-600"><span className="font-bold">{n.seenCount || 0}</span> <span className="text-slate-400">seen</span></span>
-                              <span className="inline-flex items-center gap-1 text-emerald-700"><span className="font-bold">{n.readCount || 0}</span> <span className="text-slate-400">read</span></span>
-                              <span className="inline-flex items-center gap-1 text-sky-700"><span className="font-bold">{n.clickCount || 0}</span> <span className="text-slate-400">clicked</span></span>
-                              <span className="inline-flex items-center gap-1 text-rose-600"><span className="font-bold">{n.deletedCount || 0}</span> <span className="text-slate-400">deleted</span></span>
-                            </div>
+                          <p className="font-black text-[15px] text-slate-900 truncate">{n.title}</p>
+                          <p className="text-xs text-slate-600 line-clamp-2 mt-0.5">{n.body}</p>
+                          <div className="flex items-center gap-3 mt-2 flex-wrap text-[11px] font-semibold">
+                            <span className="inline-flex items-center gap-1 text-slate-600">👀 {n.seenCount || 0} <span className="text-slate-400 font-normal">seen</span></span>
+                            <span className="inline-flex items-center gap-1 text-emerald-700">✅ {n.readCount || 0} <span className="text-slate-400 font-normal">read</span></span>
+                            <span className="inline-flex items-center gap-1 text-sky-700">🖱 {n.clickCount || 0} <span className="text-slate-400 font-normal">clicked</span></span>
+                            <span className="inline-flex items-center gap-1 text-rose-600">🗑 {n.deletedCount || 0} <span className="text-slate-400 font-normal">deleted</span></span>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-slate-100">
-                          <button onClick={() => setRecipientsFor(n)} className="flex-1 min-h-[36px] px-3 py-1.5 rounded-lg text-[12px] font-bold text-white bg-slate-900 hover:bg-slate-800 flex items-center justify-center gap-1.5">
-                            <Users className="w-3.5 h-3.5" /> Recipients
-                          </button>
-                          <button onClick={() => setEditingNotif({ ...n })} className="flex-1 min-h-[36px] px-3 py-1.5 rounded-lg text-[12px] font-semibold text-slate-700 hover:bg-slate-100 border border-slate-200 flex items-center justify-center gap-1.5">
-                            <Edit className="w-3.5 h-3.5" /> Edit
-                          </button>
-                          <button onClick={() => duplicateToComposer(n)} className="min-h-[36px] px-3 py-1.5 rounded-lg text-[12px] font-semibold text-slate-700 hover:bg-slate-100 border border-slate-200 flex items-center justify-center gap-1.5" title="Duplicate">
-                            <Copy className="w-3.5 h-3.5" />
-                          </button>
-                          <button onClick={() => deleteNotification(n.id)} className="min-h-[36px] px-3 py-1.5 rounded-lg text-[12px] font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 flex items-center justify-center gap-1.5" title="Delete for everyone">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-slate-100">
+                        <button onClick={() => setRecipientsFor(n)} className="flex-1 min-h-[40px] px-3 py-2 rounded-lg text-[12px] font-bold text-white bg-slate-900 hover:bg-slate-800 flex items-center justify-center gap-1.5">
+                          <Users className="w-3.5 h-3.5" /> Recipients
+                        </button>
+                        <button onClick={() => setEditingNotif({ ...n })} className="flex-1 min-h-[40px] px-3 py-2 rounded-lg text-[12px] font-semibold text-slate-700 hover:bg-slate-100 border border-slate-200 flex items-center justify-center gap-1.5">
+                          <Edit className="w-3.5 h-3.5" /> Edit
+                        </button>
+                        <button onClick={() => duplicateToComposer(n)} className="min-h-[40px] px-3 py-2 rounded-lg text-[12px] font-semibold text-slate-700 hover:bg-slate-100 border border-slate-200 flex items-center justify-center gap-1.5" title="Duplicate">
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => deleteNotification(n.id)} className="min-h-[40px] px-3 py-2 rounded-lg text-[12px] font-semibold text-red-600 hover:bg-red-50 border border-red-200 flex items-center justify-center gap-1.5" title="Delete for everyone">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
                   ))}
                 </div>
               </section>
-
             </div>
           </div>
         )}
@@ -11541,9 +8761,85 @@ function AdminPanel() {
               <h2 className="font-black text-base sm:text-lg mb-4 flex items-center gap-2">
                 <div className="bg-blue-50 p-1.5 rounded-lg"><Mail className="w-4 h-4 text-blue-600" /></div>
                 Connected Accounts
-                <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-full ml-auto">{emailAccounts.length}</span>
+                <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-full ml-auto">{emailAccounts.length + 1}</span>
               </h2>
 
+              <div
+                className={`p-4 rounded-2xl border mb-3 cursor-pointer transition-all ${expandedAccount === -1 ? "bg-green-100 border-green-300 shadow-md" : "bg-green-50 border-green-100 hover:border-green-200"}`}
+                onClick={() => setExpandedAccount(expandedAccount === -1 ? null : -1)}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="bg-green-200 p-2 rounded-xl">
+                    <Server className="w-4 h-4 text-green-700" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-bold text-sm text-green-900">Primary</p>
+                    <p className="text-xs text-green-700">{serverConfig.IMAP_USER || "Configure in Settings tab"} • {serverConfig.IMAP_HOST || "imap.gmail.com"}:{serverConfig.IMAP_PORT || "993"}</p>
+                  </div>
+                  <Eye className={`w-4 h-4 transition-transform ${expandedAccount === -1 ? "text-green-700" : "text-green-400"}`} />
+                </div>
+                {expandedAccount === -1 && (
+                  <div className="mt-4 pt-3 border-t border-green-200 space-y-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-bold text-green-600 uppercase mb-1">Host</label>
+                        <input type="text" value={serverConfig.IMAP_HOST} onChange={(e) => setServerConfig({ ...serverConfig, IMAP_HOST: e.target.value })}
+                          placeholder="imap.gmail.com" className="w-full bg-white/80 border border-green-100 rounded-lg p-2 outline-none focus:ring-2 focus:ring-green-500 text-sm text-green-900" />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-green-600 uppercase mb-1">Port</label>
+                        <input type="text" value={serverConfig.IMAP_PORT} onChange={(e) => setServerConfig({ ...serverConfig, IMAP_PORT: e.target.value })}
+                          placeholder="993" className="w-full bg-white/80 border border-green-100 rounded-lg p-2 outline-none focus:ring-2 focus:ring-green-500 text-sm text-green-900" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-green-600 uppercase mb-1">Email / Username</label>
+                      <input type="text" value={serverConfig.IMAP_USER} onChange={(e) => setServerConfig({ ...serverConfig, IMAP_USER: e.target.value })}
+                        placeholder="Email address" className="w-full bg-white/80 border border-green-100 rounded-lg p-2 outline-none focus:ring-2 focus:ring-green-500 text-sm text-green-900" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-green-600 uppercase mb-1">Password</label>
+                      <PasswordInput value={serverConfig.IMAP_PASSWORD} onChange={(e) => setServerConfig({ ...serverConfig, IMAP_PASSWORD: e.target.value })}
+                        placeholder="App password" className="w-full bg-white/80 border border-green-100 rounded-lg p-2 pr-12 outline-none focus:ring-2 focus:ring-green-500 text-sm" />
+                    </div>
+                    <div className="bg-white/60 rounded-lg p-2">
+                      <p className="text-[10px] font-bold text-green-600 uppercase mb-1">Cloudflare Worker URLs</p>
+                      <div className="space-y-1.5 mb-2">
+                        {primaryCfUrls.map((url, ui) => (
+                          <div key={ui} className="flex items-center gap-2 bg-white rounded-md px-2 py-1 border border-green-100">
+                            <input type="text" value={url} onChange={(e) => setPrimaryCfUrls(primaryCfUrls.map((item, idx) => idx === ui ? e.target.value : item))}
+                              className="text-sm text-green-900 font-medium flex-1 min-w-0 bg-transparent outline-none" />
+                            <button type="button" onClick={() => copyToClipboard(url, "Worker URL copied")}
+                              className="p-1 rounded hover:bg-green-100 text-green-700 flex-shrink-0" aria-label="Copy worker URL">
+                              <Copy className="w-3 h-3" />
+                            </button>
+                            <button type="button" onClick={() => setPrimaryCfUrls(primaryCfUrls.filter((_, idx) => idx !== ui))}
+                              className="p-1 rounded hover:bg-red-50 text-red-500 flex-shrink-0" aria-label="Remove worker URL">
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <input type="text" placeholder="https://worker.workers.dev" value={primaryCfInput}
+                          onChange={(e) => setPrimaryCfInput(e.target.value)}
+                          className="flex-1 bg-white border border-green-100 rounded-lg p-2 outline-none focus:ring-2 focus:ring-green-500 text-xs text-green-900" />
+                        <button type="button" onClick={() => {
+                          if (!primaryCfInput.trim()) return;
+                          setPrimaryCfUrls([...primaryCfUrls, primaryCfInput.trim().replace(/\/+$/, "")]);
+                          setPrimaryCfInput("");
+                        }} className="px-3 py-1.5 bg-green-700 text-white text-xs font-bold rounded-lg hover:bg-green-800">
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                    <button type="button" onClick={saveServerConfig} disabled={savingConfig}
+                      className="w-full bg-green-700 text-white text-sm font-bold py-2.5 rounded-xl hover:bg-green-800 disabled:opacity-60 transition-all">
+                      {savingConfig ? "Saving..." : "Save Primary Account"}
+                    </button>
+                  </div>
+                )}
+              </div>
 
               {emailAccounts.length === 0 ? (
                 <p className="text-slate-400 text-sm text-center py-6">No additional accounts. Add one from the left panel.</p>
@@ -11660,54 +8956,6 @@ function AdminPanel() {
 
         {activeTab === "settings" && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-            <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm lg:col-span-2">
-              <h2 className="font-black text-base sm:text-lg mb-1 flex items-center gap-2">
-                <div className="bg-amber-50 p-1.5 rounded-lg"><AlertCircle className="w-4 h-4 text-amber-600" /></div>
-                Plan Contact Info
-              </h2>
-              <p className="text-[11px] text-slate-500 mb-4">Shown to paid users when their plan has ended. Add multiple entries per channel — perfect for a support team.</p>
-              {([
-                { label: "Telegram", list: contactInfoTelegrams, set: setContactInfoTelegrams, placeholder: "@yourhandle or https://t.me/...", icon: Send, tint: "sky" },
-                { label: "WhatsApp", list: contactInfoWhatsapps, set: setContactInfoWhatsapps, placeholder: "+91 98765 43210", icon: MessageSquare, tint: "emerald" },
-                { label: "Email", list: contactInfoEmails, set: setContactInfoEmails, placeholder: "admin@example.com", icon: Mail, tint: "slate" },
-              ] as const).map(({ label, list, set, placeholder, icon: Icon, tint }) => (
-                <div key={label} className="mb-4">
-                  <label className="flex items-center gap-1.5 text-xs font-bold text-slate-500 uppercase mb-1.5 ml-1">
-                    <Icon className={`w-3.5 h-3.5 text-${tint}-600`} /> {label}
-                  </label>
-                  <div className="space-y-2">
-                    {list.map((val, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <input type={label === "Email" ? "email" : "text"} placeholder={placeholder} value={val}
-                          onChange={(e) => set(list.map((v, i) => i === idx ? e.target.value : v))}
-                          className="flex-1 bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-red-500 text-sm" />
-                        <button type="button" onClick={() => set(list.length > 1 ? list.filter((_, i) => i !== idx) : [""])}
-                          className="h-11 w-11 rounded-xl border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 flex items-center justify-center transition"
-                          title="Remove">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                    <button type="button" onClick={() => set([...list, ""])}
-                      className="text-xs font-bold text-slate-600 hover:text-red-600 flex items-center gap-1 transition">
-                      <Plus className="w-3.5 h-3.5" /> Add {label.toLowerCase()}
-                    </button>
-                  </div>
-                </div>
-              ))}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1.5 ml-1">Note (optional)</label>
-                <input type="text" placeholder="Renewal instructions..." value={contactInfoNote}
-                  onChange={(e) => setContactInfoNote(e.target.value)}
-                  className="w-full bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-red-500 text-sm" />
-              </div>
-              <button onClick={saveContactInfo} disabled={savingContactInfo}
-                className="mt-4 h-10 px-5 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.98] transition disabled:opacity-50">
-                {savingContactInfo ? "Saving…" : "Save Contact Info"}
-              </button>
-            </section>
-
-
             <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
               <h2 className="font-black text-base sm:text-lg mb-4 flex items-center gap-2">
                 <div className="bg-blue-50 p-1.5 rounded-lg"><Server className="w-4 h-4 text-blue-600" /></div>
@@ -11733,12 +8981,38 @@ function AdminPanel() {
 
             <section className="bg-white p-5 sm:p-6 rounded-2xl border shadow-sm">
               <h2 className="font-black text-base sm:text-lg mb-4 flex items-center gap-2">
-                <div className="bg-slate-100 p-1.5 rounded-lg"><Globe className="w-4 h-4 text-slate-600" /></div>
-                Cloudflare Workers
+                <div className="bg-red-50 p-1.5 rounded-lg"><Mail className="w-4 h-4 text-red-600" /></div>
+                Primary IMAP Server
               </h2>
-              <p className="text-[10px] text-slate-400 mb-3">💡 Shared fallback workers used for accounts without dedicated URLs</p>
+              <p className="text-[10px] text-slate-400 mb-3">💡 Save once to persist these values</p>
               <div className="space-y-3">
-
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase mb-1 ml-1">Host</label>
+                    <input type="text" placeholder="imap.gmail.com" value={serverConfig.IMAP_HOST}
+                      onChange={(e) => setServerConfig({ ...serverConfig, IMAP_HOST: e.target.value })}
+                      className="w-full bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-red-500 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase mb-1 ml-1">Port</label>
+                    <input type="text" placeholder="993" value={serverConfig.IMAP_PORT}
+                      onChange={(e) => setServerConfig({ ...serverConfig, IMAP_PORT: e.target.value })}
+                      className="w-full bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-red-500 text-sm" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1 ml-1">IMAP Email</label>
+                  <input type="text" placeholder="Email Address" value={serverConfig.IMAP_USER}
+                    onChange={(e) => setServerConfig({ ...serverConfig, IMAP_USER: e.target.value })}
+                    className="w-full bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-red-500 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1 ml-1">App Password</label>
+                  <PasswordInput value={serverConfig.IMAP_PASSWORD}
+                    onChange={(e) => setServerConfig({ ...serverConfig, IMAP_PASSWORD: e.target.value })}
+                    placeholder="16-digit App Password"
+                    className="w-full bg-slate-50 border rounded-xl p-3 pr-12 outline-none focus:ring-2 focus:ring-red-500 text-sm" />
+                </div>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase mb-1 ml-1">Cloudflare Worker URLs</label>
@@ -12138,7 +9412,7 @@ function AdminPanel() {
                   <label className="block text-[10.5px] font-bold text-slate-400 uppercase mb-1 ml-1 tracking-wider">Current version (auto)</label>
                   <input type="text" value={maintenanceVersionFrom} readOnly disabled
                     placeholder="—"
-                    className="w-full bg-slate-100 border rounded-xl p-3 outline-none text-sm font-mono text-slate-700 cursor-not-allowed select-all"
+                    className="w-full bg-slate-100 border rounded-xl p-3 outline-none text-sm font-mono text-slate-500 cursor-not-allowed select-all"
                     title="Auto-filled from the last saved upgrade target. Change it only from the database." />
                   <p className="text-[10.5px] text-slate-500 mt-1 ml-1">Locked — mirrors the last saved “Upgrading to”. Edit in DB only.</p>
                 </div>
@@ -12150,82 +9424,26 @@ function AdminPanel() {
                   <p className="text-[10.5px] text-slate-500 mt-1 ml-1">Stored in DB. Downgrades are blocked. Leave blank to auto-bump patch.</p>
                 </div>
 
-                <div className="md:col-span-2">
-                  <label className="block text-[10.5px] font-bold text-slate-400 uppercase mb-1 ml-1 tracking-wider">Back online at (optional)</label>
-                  {(() => {
-                    const pad = (n: number) => String(n).padStart(2, "0");
-                    const parts = (() => {
-                      if (!maintenanceEndsAt) return { date: "", h12: "", min: "", ampm: "AM" as "AM" | "PM" };
-                      const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(maintenanceEndsAt);
-                      if (!m) return { date: "", h12: "", min: "", ampm: "AM" as "AM" | "PM" };
-                      const h = parseInt(m[2], 10);
-                      const ampm: "AM" | "PM" = h >= 12 ? "PM" : "AM";
-                      const h12 = h % 12 === 0 ? 12 : h % 12;
-                      return { date: m[1], h12: String(h12), min: m[3], ampm };
-                    })();
-                    const compose = (date: string, h12: string, min: string, ampm: "AM" | "PM") => {
-                      if (!date || !h12 || min === "") { setMaintenanceEndsAt(""); return; }
-                      let h = parseInt(h12, 10) % 12;
-                      if (ampm === "PM") h += 12;
-                      setMaintenanceEndsAt(`${date}T${pad(h)}:${pad(parseInt(min, 10) || 0)}`);
-                    };
-                    return (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <input type="date" value={parts.date}
-                          onChange={(e) => compose(e.target.value, parts.h12 || "12", parts.min || "00", parts.ampm)}
-                          className="bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-amber-500 text-sm text-slate-900" />
-                        <div className="flex items-center gap-1 bg-slate-50 border rounded-xl px-2 py-1">
-                          <select value={parts.h12} onChange={(e) => compose(parts.date, e.target.value, parts.min || "00", parts.ampm)}
-                            className="bg-transparent text-sm text-slate-900 outline-none px-1 py-1.5">
-                            <option value="" disabled>HH</option>
-                            {Array.from({ length: 12 }, (_, i) => i + 1).map((h) => (
-                              <option key={h} value={String(h)}>{pad(h)}</option>
-                            ))}
-                          </select>
-                          <span className="text-slate-400 text-sm">:</span>
-                          <select value={parts.min} onChange={(e) => compose(parts.date, parts.h12 || "12", e.target.value, parts.ampm)}
-                            className="bg-transparent text-sm text-slate-900 outline-none px-1 py-1.5">
-                            <option value="" disabled>MM</option>
-                            {Array.from({ length: 60 }, (_, i) => i).map((m) => (
-                              <option key={m} value={pad(m)}>{pad(m)}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="inline-flex rounded-xl border overflow-hidden text-xs font-semibold">
-                          {(["AM", "PM"] as const).map((v) => (
-                            <button key={v} type="button"
-                              onClick={() => compose(parts.date || new Date().toISOString().slice(0, 10), parts.h12 || "12", parts.min || "00", v)}
-                              className={`px-3 py-2 ${parts.ampm === v ? "bg-amber-500 text-white" : "bg-slate-50 text-slate-600 hover:bg-slate-100"}`}>
-                              {v}
-                            </button>
-                          ))}
-                        </div>
-                        {maintenanceEndsAt && (
-                          <button type="button" onClick={() => setMaintenanceEndsAt("")}
-                            className="px-3 py-2 rounded-xl border text-xs font-semibold text-slate-600 hover:bg-slate-50">Clear</button>
-                        )}
-                        {[15, 30, 60, 120].map((mins) => (
-                          <button key={mins} type="button"
-                            onClick={() => {
-                              const d = new Date(Date.now() + mins * 60000);
-                              setMaintenanceEndsAt(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
-                            }}
-                            className="px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold text-slate-600 hover:bg-slate-50">
-                            +{mins < 60 ? `${mins}m` : `${mins / 60}h`}
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })()}
-                  <p className="text-[10.5px] text-slate-500 mt-1 ml-1">12-hour format with AM/PM. Shown as “Back at …” with a live countdown on the maintenance screen. Leave blank to hide.</p>
+                <div>
+                  <label className="block text-[10.5px] font-bold text-slate-400 uppercase mb-1 ml-1 tracking-wider">Current version (auto)</label>
+                  <input type="text" value={maintenanceVersionFrom} readOnly disabled
+                    placeholder="—"
+                    className="w-full bg-slate-100 border rounded-xl p-3 outline-none text-sm font-mono text-slate-500 cursor-not-allowed select-all"
+                    title="Auto-filled from the last saved upgrade target. Change it only from the database." />
+                  <p className="text-[10.5px] text-slate-500 mt-1 ml-1">Locked — mirrors the last saved “Upgrading to”. Edit in DB only.</p>
                 </div>
-
-
+                <div>
+                  <label className="block text-[10.5px] font-bold text-slate-400 uppercase mb-1 ml-1 tracking-wider">Upgrading to (upgrade-only)</label>
+                  <input type="text" value={maintenanceVersionTo} onChange={(e) => setMaintenanceVersionTo(e.target.value)}
+                    placeholder="e.g. 2.5.0"
+                    className="w-full bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-amber-500 text-sm font-mono text-slate-900" />
+                  <p className="text-[10.5px] text-slate-500 mt-1 ml-1">Stored in DB. Downgrades are blocked. Leave blank to auto-bump patch.</p>
+                </div>
                 <div className="md:col-span-2">
                   <label className="block text-[10.5px] font-bold text-slate-400 uppercase mb-1 ml-1 tracking-wider">Message shown to users</label>
                   <textarea value={maintenanceMessage} onChange={(e) => setMaintenanceMessage(e.target.value)} rows={3}
                     placeholder="The site is offline for a short while so we can make it faster and safer for you. No action needed — please check back soon."
-                    className="w-full bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-amber-500 text-sm resize-none text-slate-900" />
+                    className="w-full bg-slate-50 border rounded-xl p-3 outline-none focus:ring-2 focus:ring-amber-500 text-sm resize-none" />
                 </div>
               </div>
 
@@ -13100,28 +10318,6 @@ function EmailViewer() {
     return tvGlobalOn;
   }, [viewerTvOverride, tvGlobalOn]);
 
-  // Per-user feature flags (Gmail / TV / Direct Link). Admin-controlled.
-  const userFeatures = useMemo(() => {
-    const f = resolveFeatures(user);
-    // Respect existing tvVisible layering (global switch + per-user override)
-    return { ...f, tv: f.tv && tvVisible };
-  }, [user, tvVisible]);
-  const { view: workflowView, setChoice: setWorkflowViewRaw } = useWorkflowView(user, userFeatures);
-  const setWorkflowView = useCallback((v: "gmail" | "tv" | "link") => {
-    setWorkflowViewRaw(v);
-    // Persist to the server so the choice follows the user across browsers/devices.
-    // Fire-and-forget — a network hiccup should never block the UI transition.
-    try {
-      apiCall("manage-app", { action: "set_workflow_view", view: v })
-        .then(() => { try { (user as any).lastWorkflowView = v; } catch {} })
-        .catch(() => {});
-    } catch {}
-  }, [setWorkflowViewRaw, user]);
-  const [tvModalTrigger, setTvModalTrigger] = useState(0);
-  // Prefetch TV / Link accounts as soon as features resolve — avoids the 5s wait later.
-  useEffect(() => { try { prefetchWorkflowAccounts(apiCall, userFeatures); } catch {} }, [userFeatures.tv, userFeatures.link]);
-
-
 
   const [refreshing, setRefreshing] = useState(false);
   const refreshingRef = useRef(false);
@@ -13248,43 +10444,10 @@ function EmailViewer() {
     })();
   }, []);
 
-  // Op#2: Worker-first list_delta. Steady-state polls hit the 30s KV cache
-  // and return a tiny empty-diff, cutting cached_emails DB reads by ~97%.
-  // Falls through to direct Supabase edge on any worker miss/error.
-  const fetchListDelta = useCallback(async (params: { since: number; limit: number; baseline?: boolean }) => {
-    const token = getSessionToken();
-    const workerUrls = resolvedWorkerUrls || [];
-    if (token && workerUrls.length > 0) {
-      const workerBase = workerUrls[Math.floor(Math.random() * workerUrls.length)].replace(/\/+$/, "");
-      try {
-        const res = await fetchWithTimeout(`${workerBase}/api/inbox/list`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Session-Token": token },
-          body: JSON.stringify(params),
-        }, 8000);
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.success) {
-            pushDiag({
-              ts: Date.now(), kind: "cache", endpoint: `${workerBase}/api/inbox/list`,
-              status: res.status,
-              cacheStatus: res.headers.get("X-Cache-Status") || undefined,
-              cacheAge: res.headers.get("X-Cache-Age") || undefined,
-            });
-            return data;
-          }
-        }
-      } catch (e) {
-        pushDiag({ ts: Date.now(), kind: "cache", endpoint: `${workerBase}/api/inbox/list`, error: e instanceof Error ? e.message : String(e) });
-      }
-    }
-    return await apiCall("manage-app", { action: "list_delta", ...params });
-  }, [resolvedWorkerUrls, pushDiag]);
-
   const loadCachedEmailsDirect = useCallback(async (limit = 200): Promise<Email[]> => {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
     const started = performance.now();
-    const delta = await fetchListDelta({ since: 0, limit: safeLimit, baseline: true });
+    const delta = await apiCall("manage-app", { action: "list_delta", since: 0, limit: safeLimit, baseline: true });
     const rows = Array.isArray(delta?.rows) ? delta.rows as Email[] : [];
     pushDiag({
       ts: Date.now(),
@@ -13307,7 +10470,7 @@ function EmailViewer() {
     setError(null);
     setLastUpdated(new Date());
     return merged;
-  }, [pushDiag, setEmails, emails, fetchListDelta]);
+  }, [pushDiag, setEmails, emails]);
 
   const loadCachedEmails = useCallback(async (opts?: { bust?: boolean; limit?: number }) => {
     const bust = !!opts?.bust;
@@ -13637,10 +10800,6 @@ function EmailViewer() {
     [refreshAccountLabels],
   );
   useEffect(() => {
-    // Hard-gate: no Gmail/IMAP work unless the user is in the Gmail workflow.
-    // TV and Direct-Link views must never trigger list_delta, IDB paint,
-    // worker refresh, or any fetch-emails call.
-    if (workflowView !== "gmail") return;
     const runKey = `${user?.id || ""}:${instantInboxAccountKey}`;
     if (instantInboxRunKeyRef.current === runKey) return;
     if (!user?.id) return;
@@ -13694,7 +10853,7 @@ function EmailViewer() {
         // changes after that cursor. Otherwise old emails can never backfill.
         const cursor = cached.length === 0 ? 0 : storedCursor;
         const started = performance.now();
-        const delta = await fetchListDelta({ since: cursor, limit: cursor === 0 ? 1000 : 500 });
+        const delta = await apiCall("manage-app", { action: "list_delta", since: cursor, limit: cursor === 0 ? 1000 : 500 });
         pushDiag({
           ts: Date.now(),
           kind: "sync",
@@ -13733,7 +10892,7 @@ function EmailViewer() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, instantInboxAccountKey, markInboxReady, workflowView]);
+  }, [user?.id, instantInboxAccountKey, markInboxReady]);
 
 
   // Wrap email selection so full HTML is lazy-fetched on first click.
@@ -13975,10 +11134,8 @@ function EmailViewer() {
                 Admin
               </button>
             )}
-            <WorkflowSwitcher features={userFeatures} view={workflowView} onChange={setWorkflowView} compact />
-            <TvAutoLoginButton visible={false} />
+            <TvAutoLoginButton visible={tvVisible} />
             <NotificationBell />
-            {workflowView === "gmail" && (
             <button
               onClick={() => fetchEmails()}
               disabled={refreshing}
@@ -13988,7 +11145,6 @@ function EmailViewer() {
             >
               <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
             </button>
-            )}
             {canChangePassword && (
               <button
                 onClick={() => setShowChangePwd(true)}
@@ -14044,17 +11200,14 @@ function EmailViewer() {
                 Back to Admin
               </button>
             )}
-            <WorkflowSwitcher features={userFeatures} view={workflowView} onChange={setWorkflowView} />
-            <TvAutoLoginButton visible={false} />
+            <TvAutoLoginButton visible={tvVisible} />
             <NotificationBell />
-            {workflowView === "gmail" && (
             <button onClick={() => fetchEmails()}
               disabled={refreshing}
               className="flex items-center px-4 py-2 bg-slate-900 text-white rounded-full text-sm font-bold hover:bg-slate-800 transition-all active:scale-95 disabled:opacity-60">
               <RefreshCw className={`w-5 h-5 ${refreshing ? "animate-spin" : ""}`} />
               <span className="ml-1.5">Refresh</span>
             </button>
-            )}
             <button onClick={() => setShowProfile(true)}
               className="flex items-center px-3 py-2 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-full text-sm font-bold hover:from-violet-600 hover:to-purple-700 transition-all active:scale-95 shadow-md shadow-purple-200"
               title="Profile">
@@ -14086,38 +11239,10 @@ function EmailViewer() {
       </header>
 
 
-      <AnimatePresence mode="wait" initial={false}>
-        {workflowView === null && countEnabled(userFeatures) >= 2 ? (
-          <motion.main key="wf-chooser"
-            className="h-[calc(100dvh-3.5rem)] sm:h-[calc(100dvh-4rem)] overflow-y-auto overscroll-contain"
-            initial={{ opacity: 0, y: 12, filter: "blur(6px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: -12, filter: "blur(6px)" }}
-            transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}>
-            <WorkflowChooser features={userFeatures} user={user} lastView={(user as any)?.lastWorkflowView || null} onPick={setWorkflowView} onLogout={fastClearCookiesRedirect} />
-          </motion.main>
-        ) : workflowView === "link" && userFeatures.link ? (
-          <motion.main key="wf-link" className="max-w-6xl mx-auto"
-            initial={{ opacity: 0, y: 12, filter: "blur(6px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: -12, filter: "blur(6px)" }}
-            transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}>
-            <DirectLinkView apiCall={apiCall} notify={notify} />
-          </motion.main>
-        ) : workflowView === "tv" ? (
-          <motion.main key="wf-tv" className="max-w-6xl mx-auto"
-            initial={{ opacity: 0, y: 12, filter: "blur(6px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: -12, filter: "blur(6px)" }}
-            transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}>
-            <TvSignInPage />
-          </motion.main>
-        ) : workflowView === "gmail" || countEnabled(userFeatures) < 2 ? (
-      <motion.main key="wf-gmail" className="max-w-6xl mx-auto px-2 sm:px-4 min-h-[calc(100dvh-3.5rem)] md:h-[calc(100vh-4rem)] overflow-visible md:overflow-hidden"
-        initial={{ opacity: 0, y: 12, filter: "blur(6px)" }} animate={{ opacity: 1, y: 0, filter: "blur(0px)" }} exit={{ opacity: 0, y: -12, filter: "blur(6px)" }} transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}>
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-8 md:h-full py-2 sm:py-4 pb-28 md:pb-4">
-          <div className={`${selectedEmail ? "hidden md:block" : "block"} md:col-span-5 xl:col-span-4 flex flex-col overflow-visible md:overflow-hidden md:h-full`}>
-            <section className="flex-1 overflow-visible md:overflow-y-auto min-h-0 flex flex-col">
+      <main className="max-w-6xl mx-auto px-2 sm:px-4 h-[calc(100vh-3.5rem)] sm:h-[calc(100vh-4rem)] overflow-hidden">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-8 h-full py-2 sm:py-4">
+          <div className={`${selectedEmail ? "hidden md:block" : "block"} md:col-span-5 xl:col-span-4 flex flex-col overflow-hidden h-full`}>
+            <section className="flex-1 overflow-y-auto min-h-0 flex flex-col">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="font-bold text-slate-800 flex items-center gap-2">
                   Inbox
@@ -14131,7 +11256,7 @@ function EmailViewer() {
                 </div>
               )}
 
-              <div className="space-y-2 flex-1 overflow-visible md:overflow-y-auto min-h-0">
+              <div className="space-y-2 flex-1 overflow-y-auto min-h-0">
                 {emails.length === 0 && !error ? (
                   <div className="bg-white border border-dashed border-slate-200 rounded-xl p-12 text-center">
                     <div className="bg-slate-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
@@ -14172,11 +11297,11 @@ function EmailViewer() {
             </section>
           </div>
 
-          <div className={`${selectedEmail ? "block" : "hidden md:flex"} md:col-span-7 xl:col-span-8 flex flex-col overflow-visible md:overflow-hidden md:h-full`}>
+          <div className={`${selectedEmail ? "block" : "hidden md:flex"} md:col-span-7 xl:col-span-8 flex flex-col overflow-hidden h-full`}>
             {selectedEmail ? (
               <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}
-                className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col md:h-full overflow-visible md:overflow-hidden">
-                <div className="p-3 sm:p-6 border-b border-slate-100 bg-white md:sticky md:top-0 z-10 rounded-t-2xl">
+                className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden">
+                <div className="p-3 sm:p-6 border-b border-slate-100 bg-white sticky top-0 z-10">
                   <div className="flex items-center gap-2 sm:gap-4 mb-3 sm:mb-6">
                     <button onClick={() => setSelectedEmail(null)}
                       className="flex items-center gap-1.5 px-3 py-1.5 sm:px-4 sm:py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full transition-colors font-bold text-xs sm:text-sm active:scale-95">
@@ -14206,7 +11331,23 @@ function EmailViewer() {
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-visible md:overflow-auto p-2 sm:p-6 bg-white rounded-b-2xl">
+                <div className="flex-1 overflow-auto p-2 sm:p-6 bg-white">
+                  {selectedEmail.otp && (
+                    <div className="mb-4 sm:mb-8 bg-slate-900 rounded-xl sm:rounded-2xl p-4 sm:p-6 text-center shadow-xl shadow-slate-200 relative overflow-hidden">
+                      <div className="relative z-10">
+                        <p className="text-slate-400 text-[10px] sm:text-xs font-bold uppercase tracking-[0.15em] mb-1 sm:mb-2">Detected OTP Code</p>
+                        <div className="text-3xl sm:text-5xl font-mono font-black text-white tracking-wider sm:tracking-widest mb-2 sm:mb-4">{selectedEmail.otp}</div>
+                        <button onClick={() => copyOtp(selectedEmail.otp!)}
+                          className="flex items-center gap-1.5 mx-auto px-4 py-1.5 sm:px-6 sm:py-2 bg-red-600 hover:bg-red-700 text-white rounded-full font-bold text-xs sm:text-sm transition-all active:scale-95">
+                          {otpCopied ? <><Check className="w-4 h-4" />Copied!</> : <><Copy className="w-4 h-4" />Copy Code</>}
+                        </button>
+                      </div>
+                      <div className="absolute top-0 right-0 p-2 sm:p-4 opacity-10">
+                        <ShieldCheck className="w-16 h-16 sm:w-24 sm:h-24 text-white" />
+                      </div>
+                    </div>
+                  )}
+
                   <div className="email-html-wrapper">
                     {loadingEmailHtmlId === selectedEmail.id && !selectedEmail.html ? (
                       <div className="flex items-center justify-center py-16">
@@ -14214,16 +11355,18 @@ function EmailViewer() {
                       </div>
                     ) : (
                       <iframe
-                        srcDoc={responsiveEmailSrcDoc(selectedEmail)}
-                        sandbox="allow-popups allow-popups-to-escape-sandbox allow-scripts"
-                        className="w-full border-0 block"
-                        scrolling="no"
-                        style={{ minHeight: "220px", height: "220px", overflow: "hidden" }}
+                        srcDoc={`<!DOCTYPE html><html><head><base target="_blank"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:8px;overflow-x:hidden;word-break:break-word}img{max-width:100%!important;height:auto!important}a{color:#e11d48}*{box-sizing:border-box}</style></head><body>${emailHtmlForDisplay(selectedEmail)}<script>(function(){function force(a){try{a.setAttribute('target','_blank');a.setAttribute('rel','noopener noreferrer');}catch(e){}}function scan(){document.querySelectorAll('a,button').forEach(force);}document.addEventListener('click',function(e){var a=e.target.closest('a,button');if(!a)return;var href=a.getAttribute('href')||a.dataset.href;if(href){e.preventDefault();window.open(href,'_blank','noopener,noreferrer');}},true);document.addEventListener('contextmenu',function(e){e.preventDefault();});scan();try{new MutationObserver(scan).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['href','target']});}catch(e){}})();<\/script></body></html>`}
+                        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-scripts"
+                        className="w-full border-0"
+                        style={{ minHeight: "400px" }}
                         title="Email content"
-                        data-email-iframe="true"
-                        data-email-iframe-id={String(selectedEmail.id || "email-preview").replace(/[^a-zA-Z0-9_-]/g, "_")}
+                        onLoad={(e) => {
+                          const iframe = e.target as HTMLIFrameElement;
+                          if (iframe.contentDocument?.body) {
+                            iframe.style.height = iframe.contentDocument.body.scrollHeight + 20 + "px";
+                          }
+                        }}
                       />
-
                     )}
                   </div>
                 </div>
@@ -14239,10 +11382,7 @@ function EmailViewer() {
             )}
           </div>
         </div>
-      </motion.main>
-      ) : null}
-      </AnimatePresence>
-
+      </main>
 
       {/* ============ CHANGE PASSWORD MODAL ============ */}
       <AnimatePresence>
@@ -14549,163 +11689,6 @@ function CatchAllRoute() {
 
 
 
-// Global "Plan Finished" modal. Shown when any edge call returns
-// { success: false, error: "plan_finished" }. Displays admin contact info
-// and forces the user out of any active session.
-function PlanFinishedModal() {
-  const [state, setState] = useState<{ open: boolean; contactInfo: any; planEndsAt: string | null }>({ open: false, contactInfo: null, planEndsAt: null });
-  useEffect(() => {
-    const handler = (e: any) => {
-      const detail = e?.detail || {};
-      // MERGE — never overwrite existing contact info with an empty payload.
-      // Two dispatchers race: the client-side plan-ends pill fires a "bare"
-      // event (planEndsAt only) the moment the timer hits 0, and shortly
-      // after the server "me" refresh returns full contactInfo. Without a
-      // merge the modal would flicker between "with contacts" and "no
-      // contacts" as the two events arrived in unpredictable order.
-      setState(prev => ({
-        open: true,
-        contactInfo: (detail.contactInfo && Object.keys(detail.contactInfo).length ? detail.contactInfo : prev.contactInfo) || null,
-        planEndsAt: detail.planEndsAt || prev.planEndsAt || null,
-      }));
-      // Kill any active session so protected routes bounce out.
-      try {
-        sessionSet("session_token" as any, "");
-        sessionSet("user" as any, "");
-      } catch {}
-    };
-    window.addEventListener("app:plan-finished", handler as any);
-    return () => window.removeEventListener("app:plan-finished", handler as any);
-  }, []);
-  if (!state.open || typeof document === "undefined") return null;
-  const c = state.contactInfo || {};
-  const endedOn = state.planEndsAt ? new Date(state.planEndsAt).toLocaleString() : null;
-  const toList = (plural: any, singular: any): string[] => {
-    if (Array.isArray(plural) && plural.length) return plural.map((x: any) => String(x || "")).filter(Boolean);
-    if (typeof singular === "string" && singular.trim()) return [singular.trim()];
-    return [];
-  };
-  const tgs = toList(c.telegrams, c.telegram);
-  const was = toList(c.whatsapps, c.whatsapp);
-  const ems = toList(c.emails, c.email);
-  const tgHref = (v: string) => v.startsWith("http") ? v : `https://t.me/${String(v).replace(/^@/, "")}`;
-  const waHref = (v: string) => `https://wa.me/${String(v).replace(/[^\d]/g, "")}`;
-  const hasAny = tgs.length || was.length || ems.length || (c.note && String(c.note).trim());
-  return createPortal(
-    <div className="fixed inset-0 z-[10050] flex items-end sm:items-center justify-center p-0 sm:p-4">
-      {/* Solid opaque backdrop — no bleed-through of profile grid behind. */}
-      <div aria-hidden className="absolute inset-0 bg-slate-950/95 backdrop-blur-2xl" />
-      <div aria-hidden className="absolute inset-0 bg-[radial-gradient(circle_at_50%_30%,rgba(239,68,68,0.15),transparent_60%)] pointer-events-none" />
-      <div className="relative w-full sm:w-auto sm:min-w-[24rem] sm:max-w-md max-h-[92dvh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200 p-6 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] sm:pb-6">
-        <div aria-hidden className="sm:hidden flex justify-center -mt-1 mb-3">
-          <div className="w-10 h-1 rounded-full bg-slate-300" />
-        </div>
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center flex-shrink-0">
-            <AlertCircle className="w-6 h-6" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-lg font-black text-slate-900 leading-tight">Plan Finished</div>
-            <div className="text-xs text-slate-500 mt-0.5">Contact admin to renew</div>
-          </div>
-        </div>
-        <p className="text-sm text-slate-700 leading-relaxed">Your plan has ended. Sign-in features are paused until it's renewed.</p>
-        {endedOn && (
-          <div className="mt-3 rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600">Ended on <span className="font-semibold text-slate-900">{endedOn}</span></div>
-        )}
-        <div className="mt-4 space-y-2">
-          {tgs.map((v, i) => (
-            <a key={`tg-${i}`} href={tgHref(v)} target="_blank" rel="noreferrer"
-              className="flex items-center gap-3 rounded-xl bg-sky-50 border border-sky-200 px-3.5 py-2.5 text-sm font-semibold text-sky-900 hover:bg-sky-100 transition">
-              <Send className="w-4 h-4 flex-shrink-0" />
-              <span className="text-xs uppercase tracking-wide font-bold text-sky-700/80">Telegram</span>
-              <span className="ml-auto text-xs opacity-80 truncate">{v}</span>
-            </a>
-          ))}
-          {was.map((v, i) => (
-            <a key={`wa-${i}`} href={waHref(v)} target="_blank" rel="noreferrer"
-              className="flex items-center gap-3 rounded-xl bg-emerald-50 border border-emerald-200 px-3.5 py-2.5 text-sm font-semibold text-emerald-900 hover:bg-emerald-100 transition">
-              <MessageSquare className="w-4 h-4 flex-shrink-0" />
-              <span className="text-xs uppercase tracking-wide font-bold text-emerald-700/80">WhatsApp</span>
-              <span className="ml-auto text-xs opacity-80 truncate">{v}</span>
-            </a>
-          ))}
-          {ems.map((v, i) => (
-            <a key={`em-${i}`} href={`mailto:${v}`}
-              className="flex items-center gap-3 rounded-xl bg-slate-50 border border-slate-200 px-3.5 py-2.5 text-sm font-semibold text-slate-900 hover:bg-slate-100 transition">
-              <Mail className="w-4 h-4 flex-shrink-0" />
-              <span className="text-xs uppercase tracking-wide font-bold text-slate-600">Email</span>
-              <span className="ml-auto text-xs opacity-80 truncate">{v}</span>
-            </a>
-          ))}
-          {c.note && (
-            <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-xs text-amber-900 whitespace-pre-wrap">{c.note}</div>
-          )}
-          {!hasAny && (
-            <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-xs text-slate-600">Please contact the admin to renew your plan.</div>
-          )}
-        </div>
-        <button
-          onClick={() => { setState({ open: false, contactInfo: null, planEndsAt: null }); try { window.location.replace("/"); } catch {} }}
-          className="mt-5 w-full h-11 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 active:scale-[0.98] transition"
-        >
-          Back to sign-in
-        </button>
-      </div>
-    </div>,
-    document.body
-  );
-}
-
-
-
-function SessionRouteBoundary() {
-  const location = useLocation();
-  const { checkAuth } = useAuth();
-
-  useEffect(() => {
-    const path = location.pathname;
-    if (path !== "/admin" && path !== "/admin-auth") return;
-
-    const storedUser = readStoredSessionUser();
-    const token = getSessionToken();
-    // Preserve the transient pending-admin identity on BOTH /admin and
-    // /admin-auth. The password step lives on /admin and, on success, sets
-    // { user (pending:true), pending_admin_token } synchronously before it
-    // calls navigate("/admin-auth"). A React re-render can re-fire this
-    // effect on /admin between those two steps — if we clear here, the
-    // pending token is wiped and the 2FA page bounces back with no OTP.
-    const isPendingAdmin =
-      (path === "/admin" || path === "/admin-auth") &&
-      storedUser?.role === "admin" &&
-      storedUser?.pending === true &&
-      !!sessionGet("pending_admin_token" as any);
-
-    // finalize_admin_session stores the real admin session while the current
-    // route is still /admin-auth, then navigates to /admin/dashboard. Do not
-    // clear that fresh session during the tiny render window between those two
-    // steps, otherwise the user only sees the success toast and gets bounced.
-    const isActiveAdminSession =
-      (path === "/admin" || path === "/admin-auth") &&
-      storedUser?.role === "admin" &&
-      storedUser?.pending !== true &&
-      !!token;
-
-    if (isPendingAdmin || isActiveAdminSession) return;
-
-    // The public admin login/2FA routes must never inherit a normal user or
-    // impersonated profile session. Clear the tab-scoped identity immediately
-    // so profile data and countdown pills cannot bleed into admin screens.
-    if (token || storedUser) {
-      clearRouteSessionState();
-      checkAuth();
-    }
-  }, [location.pathname, checkAuth]);
-
-  return null;
-}
-
-
 // ==================== MAIN APP ====================
 export default function App() {
   return (
@@ -14713,9 +11696,6 @@ export default function App() {
       <AuthProvider>
         <ToastProvider />
         <AdminSyncStatus />
-        <SessionRouteBoundary />
-        <GlobalSessionOverlay />
-        <PlanFinishedModal />
         <ErrorBoundary>
           <MaintenanceGate>
             <Routes>
@@ -14726,7 +11706,6 @@ export default function App() {
               <Route path="/admin/viewer" element={<AdminUserViewRoute><EmailViewer /></AdminUserViewRoute>} />
               <Route path="/viewer" element={<ProtectedRoute role="user"><EmailViewer /></ProtectedRoute>} />
               <Route path="/guides/netflix-household-verification" element={<NetflixHouseholdVerificationGuide />} />
-              <Route path="/guides/netflix-tv-activation" element={<NetflixTvActivationGuide />} />
               {/* Any URL that "looks like" a logout/clear intent runs the
                   same instant-wipe flow. Covers typos like /clesrcatch,
                   /cler, /signot, /logot, /rest, /cokie, etc. */}
@@ -14742,74 +11721,18 @@ export default function App() {
   );
 }
 
-function GlobalSessionOverlay() {
-  const { user: authUser } = useAuth();
-  const location = useLocation();
-  const readSessionState = useCallback(() => {
-    const token = sessionGet("session_token" as any);
-    const storedUser = readStoredSessionUser();
-    return { token, storedUser };
-  }, []);
-  const [sessionState, setSessionState] = useState(readSessionState);
-
-  useEffect(() => {
-    const sync = () => setSessionState(readSessionState());
-    sync();
-    const id = window.setInterval(sync, 500);
-    window.addEventListener("app:session-change", sync as EventListener);
-    window.addEventListener("storage", sync);
-    window.addEventListener("focus", sync);
-    return () => {
-      window.clearInterval(id);
-      window.removeEventListener("app:session-change", sync as EventListener);
-      window.removeEventListener("storage", sync);
-      window.removeEventListener("focus", sync);
-    };
-  }, [readSessionState]);
-
-  // Prefer the latest server-hydrated sessionStorage user fields over the
-  // React auth snapshot. Token refresh / /me can update planEndsAt while the
-  // overlay is mounted, so merging here keeps the plan countdown live without
-  // waiting for a route remount.
-  const effectiveUser = authUser || sessionState.storedUser
-    ? (() => {
-      const merged = { ...(authUser || {}), ...(sessionState.storedUser || {}) } as any;
-      if (!merged.planEndsAt && merged.plan_ends_at) merged.planEndsAt = merged.plan_ends_at;
-      if (!merged.planStartsAt && merged.plan_starts_at) merged.planStartsAt = merged.plan_starts_at;
-      return merged;
-    })()
-    : null;
-  const role: "admin" | "user" = effectiveUser?.role === "admin" ? "admin" : "user";
-  const hasSessionToken = !!sessionState.token;
-  const isLoggedIn = !!effectiveUser && hasSessionToken;
-  const isImpersonating = (effectiveUser as any)?.impersonated === true;
-  const isPendingAdmin = (effectiveUser as any)?.pending === true;
-  const isAdminRoute = location.pathname.startsWith("/admin");
-
-  useSessionTimeoutGuard(role, isLoggedIn && !isImpersonating && !isPendingAdmin);
-
-  if (!isLoggedIn || isPendingAdmin) return null;
-  if (typeof document === "undefined") return null;
-
-  return createPortal(
-    <>
-      {!isImpersonating && <SessionCountdown role={role} />}
-      {role === "user" && <FreeExpiryPill userOverride={effectiveUser} />}
-      {role === "user" && <PlanEndsPill userOverride={effectiveUser} />}
-    </>,
-    document.body
-  );
-}
-
 
 const ProtectedRoute = ({ children, role }: { children: React.ReactNode; role: "admin" | "user" }) => {
   const { user, loading } = useAuth();
+  const roleAllowed = !!user && (role !== "admin" || user.role === "admin");
+  const isAdminViewingUser = role === "user" && (user as any)?.impersonated === true;
+  useSessionTimeoutGuard(role, roleAllowed && !isAdminViewingUser);
   if (loading) return <div className="min-h-screen bg-slate-950 flex items-center justify-center"><div className="w-8 h-8 border-2 border-red-500 border-t-transparent rounded-full animate-spin" /></div>;
   if (!user) return <Navigate to={role === "admin" ? "/admin" : "/"} />;
   if (role === "user" && (user as any)?.impersonated === true && window.location.pathname === "/viewer") return <Navigate to="/admin/viewer" replace />;
   if (role === "user" && user.role === "admin") return <Navigate to="/admin/dashboard" replace />;
   if (role === "admin" && user.role !== "admin") return <Navigate to={(user as any)?.impersonated === true ? "/admin/viewer" : "/"} replace />;
-  return <>{children}</>;
+  return <>{!isAdminViewingUser && <SessionCountdown role={role} />}{!isAdminViewingUser && role === "user" && <FreeExpiryPill />}{children}</>;
 };
 
 const AdminUserViewRoute = ({ children }: { children: React.ReactNode }) => {

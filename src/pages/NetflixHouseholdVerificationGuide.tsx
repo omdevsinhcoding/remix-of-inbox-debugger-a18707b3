@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Link } from "react-router";
+import { Link } from "react-router-dom";
 
 const CANONICAL_PATH = "/guides/netflix-household-verification";
 
@@ -19,7 +19,7 @@ const NetflixHouseholdVerificationGuide = () => {
     const prevTitle = document.title;
     document.title = "Netflix Household Verification: Travel Codes & OTP Guide";
 
-    setMeta('meta[name="description"]', "content", "How to approve Netflix household verification prompts, request travel OTP codes, and fix 'device not part of household' errors while traveling.");
+    setMeta('meta[name="description"]', "content", "Complete guide to Netflix household verification: how to approve travel prompts, request temporary access codes, and fix 'device not part of household' errors while traveling.");
     setMeta('meta[property="og:title"]', "content", "Netflix Household Verification Guide");
     setMeta('meta[property="og:description"]', "content", "Step-by-step help for Netflix household verification prompts, OTP travel codes, and temporary access.");
     setMeta('meta[property="og:type"]', "content", "article");
